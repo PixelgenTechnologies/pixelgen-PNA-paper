@@ -22,8 +22,8 @@ if (!requireNamespace("pak", quietly = TRUE)) {
 
 pak::pak(c("reprex", "Rcpp"))
 pak::pak(c("tidyverse", "ggplot2", "igraph", "tidygraph", "ggraph", "remotes"))
-remotes::install_github("PixelgenTechnologies/pixelatorR@v0.12.0")
-# pak::pak("PixelgenTechnologies/pixelatorR@v0.12.0")
+# remotes::install_github("PixelgenTechnologies/pixelatorR@v0.12.0")
+pak::pak("PixelgenTechnologies/pixelatorR@v0.12.0")
 
 # Save the environment state
 renv::snapshot()

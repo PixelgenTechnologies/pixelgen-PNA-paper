@@ -5,13 +5,13 @@ This repository contains the analysis code for a preprint detailing the method o
 A preprint of the paper is available at: [DOI / URL]
 
 ### Repository Structure
-📂 pixelgen-PNA-paper/
-│-- 📄 setup.R               # Script to set up R environment
-│-- 📂 data/                 # Data used in the paper (see download instructions)
-│-- 📂 docs/                 # Additional documentation
-|-- 📂 renv/                 # R environment files
-│-- 📂 results/              # Output results and figures
-│-- 📂 scripts/              # Notebooks with analyses
+- 📂 **pixelgen-PNA-paper/**
+  - 📄 *setup.R* - Script to set up R environment  
+  - 📂 *data/* - Data used in the paper (see download instructions)  
+  - 📂 *docs/* - Additional documentation  
+  - 📂 *renv/* - R environment files  
+  - 📂 *results/* - Output results and figures  
+  - 📂 *scripts/* - Notebooks with analyses  
 
 ## Getting Started
 ### Installation

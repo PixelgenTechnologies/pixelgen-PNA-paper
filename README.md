@@ -46,4 +46,7 @@ INSERT CITATION
 This project is licensed under the GPL-2.0 License.
 
 ## Contact
-For questions, please open an issue or contact [max.karlsson@pixelgen.com].
+
+ADD FINAL CONTACTS
+
+For questions, please open an issue or contact max.karlsson@pixelgen.com.

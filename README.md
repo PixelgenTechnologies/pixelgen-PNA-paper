@@ -1,15 +1,15 @@
-# pixelgen-PNA-paper
+## pixelgen-PNA-paper
 
 This repository contains the analysis code for a preprint detailing the method of the Proximity Network Assay (PNA).
 
-## CITATION TO BE ADDED
+### CITATION TO BE ADDED
 [Title of the Paper]
 [Author Names]
 [Year]
 
 A preprint of the paper is available at: [DOI / URL]
 
-## Repository Structure
+### Repository Structure
 📂 pixelgen-PNA-paper/
 │-- 📄 setup.R               # Script to set up R environment
 │-- 📂 data/                 # Data used in the paper (see download instructions)
@@ -18,22 +18,24 @@ A preprint of the paper is available at: [DOI / URL]
 │-- 📂 results/              # Output results and figures
 │-- 📂 scripts/              # Notebooks with analyses
 
-# Getting Started
-## Installation
+## Getting Started
+### Installation
 Clone the repository:
 
 git clone https://github.com/PixelgenTechnologies/pixelgen-PNA-paper.git
 
 Run the `setup.R` line by line to setup the R environment using `renv`.
 
-## Data
+### Data
 
 Download it from [\[INSERT LINK\]](https://www.pixelgen.com/) and place it in the data/ folder.
 
-## Running the Code
+### Running the Code
 To reproduce the main experiments, run:
 
-# Citation
+ADD INSTRUCTIONS
+
+## Citation
 If you use this code, please cite our paper:
 
 INSERT CITATION
@@ -45,8 +47,8 @@ INSERT CITATION
   doi={DOI or URL}
 }
 
-# License
+## License
 This project is licensed under the GPL-2.0 License.
 
-# Contact
+## Contact
 For questions, please open an issue or contact [max.karlsson@pixelgen.com].

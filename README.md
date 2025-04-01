@@ -2,11 +2,6 @@
 
 This repository contains the analysis code for a preprint detailing the method of the Proximity Network Assay (PNA).
 
-### CITATION TO BE ADDED
-[Title of the Paper]
-[Author Names]
-[Year]
-
 A preprint of the paper is available at: [DOI / URL]
 
 ### Repository Structure

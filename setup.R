@@ -1,7 +1,7 @@
 # setup.R - Script to set up the R environment
 # This script installs the renv package if not available, initializes a new
-# environment if no lockfile is present, and installs the packages listed in
-# the script if a lockfile is not present.
+# environment if no lockfile is present, and installs the packages listed
+# here or collected by `renv::dependencies()`
 
 # Install renv if not available
 if (!requireNamespace("renv", quietly = TRUE)) {
@@ -15,15 +15,7 @@ if (file.exists("renv.lock")) {
   renv::init()  # Initialize a new environment
 }
 
-# Install required packages
-if (!requireNamespace("pak", quietly = TRUE)) {
-  renv::install("pak")
-}
-
-pak::pak(c("reprex", "Rcpp"))
-pak::pak(c("tidyverse", "ggplot2", "igraph", "tidygraph", "ggraph", "remotes"))
-# remotes::install_github("PixelgenTechnologies/pixelatorR@v0.12.0")
-pak::pak("PixelgenTechnologies/pixelatorR@v0.12.0")
+renv::install("PixelgenTechnologies/pixelatorR@pna-636-migrate-code-base")
 
 # Save the environment state
 renv::snapshot()

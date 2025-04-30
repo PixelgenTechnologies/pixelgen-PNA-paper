@@ -24,10 +24,10 @@ Load helper functions
 #| label: setup
 
 library(here)
-here::i_am("scripts/raji/analysis.qmd")
+here::i_am("raji/scripts/analysis.qmd")
 
 # Load helper functions
-source(here("scripts/raji/helpers.R"))
+source(here("raji/scripts/helpers.R"))
 ```
 
 Load libraries
@@ -40,6 +40,10 @@ library(patchwork)
 library(ggplotify)
 library(ggplot2)
 library(pixelatorR)
+library(ggbeeswarm)
+library(Seurat)
+library(ggraph)
+library(tidygraph)
 ```
 
 Define color palette
@@ -61,20 +65,38 @@ Pixelgen_accent_colors <-
 
 
 col_fun <- circlize::colorRamp2(
-  seq(from = -3, to = 3, length.out = 7),
+  seq(from = -0.5, to = 0.5, length.out = 11),
   c(
-    #"#1F395F", 
-    #"#496389", 
+    "#1F395F", 
+    "#496389", 
     "#728BB1", 
     "#AABAD1", 
     "#DFE5EE", 
     "#FFFFFF", 
-    #"#FFE0EA", 
-    #"#E9AABF", 
+    "#FFE0EA", 
+    "#E9AABF", 
     "#CD6F8D", 
     "#A23F5E", 
     "#781534")
 )
+
+cols_pos <-
+  c(
+    "#F5F5F5", 
+    "#FFE0EA", 
+    "#E9AABF", 
+    "#CD6F8D", 
+    "#A23F5E", 
+    "#781534")
+
+cols_neg <-
+  c(
+    "#F5F5F5", 
+    "#DFE5EE", 
+    "#AABAD1", 
+    "#728BB1", 
+    "#496389", 
+    "#1F395F")
 
 ```
 
@@ -85,7 +107,7 @@ Load PXL data
 ```{r}
 #| label: load-pxl-data
 
-pxl_file_path <- here("data_untracked/raji/PNA062_Raji_1000cells_S06_S6.layout.pxl")
+pxl_file_path <- here("raji/data_untracked/PNA062_Raji_1000cells_S06_S6.layout.pxl")
 
 pg_data <- ReadPNA_Seurat(pxl_file_path)
 pg_data
@@ -95,9 +117,280 @@ pg_data
 
 ## Molecule Rank Plot
 
+All components have more than 10,000 molecules - the cutoff we use for filtering. The number of cells is 1017.
+
 ```{r}
 #| label: molecule-rank-plot
 
 # Plot the molecule rank plot
-(molecule_rank_plot <- MoleculeRankPlot(pg_data))
+(molecule_rank_plot <- MoleculeRankPlot(pg_data) + geom_hline(yintercept = 10000, color = "red"))
+```
+
+## Quality Control Plots
+
+The median k-core is relatively low at 1.6, but this is not unexpected for the Raji cell line. Around a 100000 molecules per cell and 230k reads per cell is good.
+
+```{r}
+#| label: quality-control-plots
+
+(qc_violin_plot <- pg_data[[]] %>% 
+  select(n_umi, reads_in_component, average_k_core) %>% 
+  pivot_longer(cols = c("reads_in_component", "n_umi", "average_k_core"), names_to = "metric", values_to = "value") %>% 
+  ggplot(aes(x = metric, y = value)) +
+  geom_quasirandom(alpha = 0.5) +
+  # Calculate and add median values to each plot
+  stat_summary(fun = median, geom = "crossbar", width = 0.5, color = "red") +
+  # Add text labels with the median values
+  stat_summary(fun = median, geom = "text", vjust = -1, 
+               aes(label = sprintf("Median: %.1f", after_stat(y))), color = "red") +
+  facet_wrap(~ metric, scales = "free") +
+  theme_bw() +
+  labs(y = ""))
+```
+
+## Tau Plot
+
+```{r}
+#| label: tau-plot
+
+# Custom plot to visualize the Tau distribution
+# TODO: Tau is not available here; rerun pixelator when denoising available in the pipeline
+TauPlot(pg_data)
+```
+
+# Filtering
+
+Filtering is not done here since the molecule cutoff is lower than the smallest component and the tau metric is not available yet. We will continue with the unfiltered data for now.
+
+# Abundance Normalization
+
+```{r}
+#| label: abundance-normalization
+
+pg_data <- Normalize(pg_data, method = "clr")
+```
+
+Evaluate marker abundance before and after normalization.
+
+```{r}
+#| label: evaluate-marker-abundance
+
+# Fetch data
+marker_cts <- Seurat::FetchData(pg_data, vars = rownames(pg_data), slot = "counts")
+marker_cts %>%  
+  pivot_longer(cols = everything(), names_to = "marker", values_to = "count") %>% 
+  ggplot(aes(x = reorder(marker, count), y = count)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(y = "Count") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        axis.title.x = element_blank())
+
+marker_norm_cts <- Seurat::FetchData(pg_data, vars = rownames(pg_data), slot = "data")
+marker_norm_cts %>%  
+  pivot_longer(cols = everything(), names_to = "marker", values_to = "values") %>% 
+  ggplot(aes(x = reorder(marker, values), y = values)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(y = "Count") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        axis.title.x = element_blank())
+
+
+# Plot the marker abundance before and after normalization
+for (marker in rownames(pg_data)) {
+  
+  glue::glue("Marker: {marker}")
+  
+  # Get the data for the current marker
+  marker_data <- marker_cts %>% 
+    pivot_longer(cols = everything(), names_to = "marker", values_to = "count") %>% 
+    filter(marker == !!marker)
+  
+  # Calculate statistics
+  median_count <- median(marker_data$count)
+  mean_count <- mean(marker_data$count)
+  
+  p1 <- marker_data %>% 
+    ggplot(aes(x = marker, y = count)) +
+    geom_quasirandom() +
+    geom_hline(yintercept = median_count, color = "red", linetype = "dashed") +
+    geom_hline(yintercept = mean_count, color = "blue", linetype = "dashed") +
+    annotate("text", x = 1, y = median_count, label = paste("Median:", round(median_count, 2)), 
+             hjust = -0.1, vjust = -0.5, color = "red") +
+    annotate("text", x = 1, y = mean_count, label = paste("Mean:", round(mean_count, 2)), 
+             hjust = -0.1, vjust = 1.5, color = "blue") +
+    theme_bw() +
+    labs(y = "Count") +
+    theme(axis.title.x = element_blank())
+  
+  # Get the normalized data for the current marker
+  norm_marker_data <- marker_norm_cts %>% 
+    pivot_longer(cols = everything(), names_to = "marker", values_to = "count") %>% 
+    filter(marker == !!marker)
+  
+  # Calculate statistics for normalized data
+  norm_median_count <- median(norm_marker_data$count)
+  norm_mean_count <- mean(norm_marker_data$count)
+  
+  p2 <- norm_marker_data %>% 
+    ggplot(aes(x = marker, y = count)) +
+    geom_quasirandom() +
+    geom_hline(yintercept = norm_median_count, color = "red", linetype = "dashed") +
+    geom_hline(yintercept = norm_mean_count, color = "blue", linetype = "dashed") +
+    annotate("text", x = 1, y = norm_median_count, label = paste("Median:", round(norm_median_count, 2)), 
+             hjust = -0.1, vjust = -0.5, color = "red") +
+    annotate("text", x = 1, y = norm_mean_count, label = paste("Mean:", round(norm_mean_count, 2)), 
+             hjust = -0.1, vjust = 1.5, color = "blue") +
+    theme_bw() +
+    labs(y = "Count") +
+    theme(axis.title.x = element_blank())
+
+  p_all <- p1 + p2 + plot_layout(ncol = 2) +
+    plot_annotation(title = glue::glue("Marker: {marker}"))
+
+  ggsave(here(glue::glue("raji/output/marker_abundance/{marker}.png")), p_all, width = 10, height = 5)
+  
+}
+```
+
+# Spatial Analysis
+
+```{r}
+#| label: spatial-analysis
+
+prox_scores <- ProximityScores(pg_data, add_marker_counts = TRUE) %>%  
+              mutate(min_count = pmin(count_1, count_2)) 
+
+prox_scores_filtered <- prox_scores %>% 
+  filter(min_count >= 150) %>%  
+  group_by(marker_1, marker_2) %>% 
+  mutate(percentage_cells = n() / ncol(pg_data)*100) %>%  
+  ungroup() %>%  
+  group_by(marker_1, marker_2) %>% 
+  filter(max(percentage_cells) >= 50)
+
+summary_df <- prox_scores_filtered %>% 
+  group_by(marker_1, marker_2) %>% 
+  summarise(mean_prox_score = mean(log2_ratio),
+            median_prox_score = median(log2_ratio),
+            min_prox_score = min(log2_ratio),
+            max_prox_score = max(log2_ratio),
+            n_cells = n(),
+            # Calculate fraction of cells relative to total cells in the dataset
+            percentage_cells = n_cells / ncol(pg_data)*100) %>% 
+  arrange(desc(mean_prox_score))
+
+(colocalization_heatmap <- ColocalizationHeatmap(summary_df, 
+                      marker1_col = "marker_1", 
+                      marker2_col = "marker_2", 
+                      value_col = "mean_prox_score", 
+                      size_col = "percentage_cells",
+                      type = "dots",
+                      size_range = c(1, 6),
+                      legend_range = c(-0.5, 0.5)) +
+                      ggtitle("Colocalization Heatmap",
+                              subtitle = "Min count = 150, Min percentage of cells = 50, legend range = -0.5 to 0.5"))
+
+ggsave(here("raji/output/colocalization_heatmap.pdf"), colocalization_heatmap, width = 12, height = 12)
+```
+
+**Known interactions**
+CD29/CD49D known complex in BLL (VLA-4).
+CD48, CD55 and CD59 complement protection
+CD19/CD21 complex essential B cell coreceptor
+CD156c (ADAM10) associates with tetraspanins CD81 and CD82 it EGF and TNF secretion
+CD19 dependent on CD81 for trafficking to the cell surface
+CD22/CD72 coreceptor for B cell activation; also CD71?
+
+```{r}
+
+
+for (marker in rownames(pg_data)) {
+
+marker_interactions <- summary_df %>%  
+  filter(marker_1 %in% marker | marker_2 %in% marker) %>% 
+  filter(abs(mean_prox_score) > 0.1) %>%  
+  select(marker_1, marker_2) 
+marker_interactions <- unique(c(marker_interactions$marker_1, marker_interactions$marker_2))
+
+if (length(marker_interactions) > 0) {
+
+marker_interactions_pos <- summary_df %>%  
+  filter(marker_1 %in% marker | marker_2 %in% marker) %>% 
+  filter(mean_prox_score > 0.1) %>%  
+  select(marker_1, marker_2) 
+marker_interactions_pos <- unique(c(marker_interactions_pos$marker_1, marker_interactions_pos$marker_2))
+
+interactions_pos <- summary_df %>%  
+    filter(marker_1 %in% marker_interactions_pos & marker_2 %in% marker_interactions_pos) %>%   
+    filter(mean_prox_score > 0.1) %>%  
+    mutate(from = marker_1, to = marker_2)
+g <- as_tbl_graph(interactions_pos)
+g <- g %>%
+  activate(edges) %>%
+  mutate(group_from = ifelse(marker_1 == marker | marker_2 == marker, "marker", "other")) %>%  
+  mutate(mean_prox_score = ifelse(group_from == "marker", mean_prox_score, 0))
+coloc_pos <- ggraph(g) +
+    geom_edge_link(aes(filter = group_from == "other", color = mean_prox_score), width = 0.5) +   
+    geom_edge_link(aes(filter = group_from == "marker", color = mean_prox_score), width = 2) +   
+    geom_node_label(
+        aes(label = name),
+        size = 4
+    ) +
+    geom_node_label(
+        aes(filter = name == marker, label = name, fill = marker),
+        size = 4, 
+        fill = "orange"
+    ) +
+    scale_edge_color_gradientn(
+        colours = cols_pos,
+        limits = c(0, 0.5)
+    ) +
+    theme(aspect.ratio = 1,
+        panel.background = element_rect(fill = "white"),
+        panel.spacing = unit(1, "lines")) +
+    ggtitle(glue::glue("{marker} Interaction Network"))
+
+marker_interactions_neg <- summary_df %>%  
+  filter(marker_1 %in% marker | marker_2 %in% marker) %>% 
+  filter(mean_prox_score < -0.1) %>%  
+  select(marker_1, marker_2) 
+marker_interactions_neg <- unique(c(marker_interactions_neg$marker_1, marker_interactions_neg$marker_2))
+
+interactions_neg <- summary_df %>%  
+    filter(marker_1 %in% marker_interactions_neg & marker_2 %in% marker_interactions_neg) %>%   
+    filter(mean_prox_score < 0.1) %>%  
+    mutate(from = marker_1, to = marker_2)
+g <- as_tbl_graph(interactions_neg)
+g <- g %>%
+  activate(edges) %>%
+  mutate(group_from = ifelse(marker_1 == marker | marker_2 == marker, "marker", "other")) %>%  
+  mutate(mean_prox_score = ifelse(group_from == "marker", mean_prox_score, 0))
+coloc_neg <- ggraph(g) +
+    geom_edge_link(aes(filter = group_from == "other", color = mean_prox_score), width = 0.5) +   
+    geom_edge_link(aes(filter = group_from == "marker", color = mean_prox_score), width = 2) +   
+    geom_node_label(
+        aes(label = name),
+        size = 4
+    ) +
+    geom_node_label(
+        aes(filter = name == marker, label = name, fill = marker),
+        size = 4, 
+        fill = "orange"
+    ) +
+    scale_edge_color_gradientn(
+        colours = rev(cols_neg),
+        limits = c(-0.5, 0)
+    ) +
+    theme(aspect.ratio = 1,
+        panel.background = element_rect(fill = "white"),
+        panel.spacing = unit(1, "lines")) +
+    ggtitle(glue::glue("{marker} Interaction Network"))
+
+
+  ggsave(here(glue::glue("raji/output/marker_interactions/{marker}.pdf")), coloc_pos + coloc_neg, width = 10, height = 8)
+
+}
+}
 ```

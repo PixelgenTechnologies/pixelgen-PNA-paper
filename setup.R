@@ -15,7 +15,7 @@ if (file.exists("renv.lock")) {
   renv::init()  # Initialize a new environment
 }
 
-renv::install("PixelgenTechnologies/pixelatorR@pna-636-migrate-code-base")
+renv::install("PixelgenTechnologies/pixelatorR")
 
 # Save the environment state
 renv::snapshot()

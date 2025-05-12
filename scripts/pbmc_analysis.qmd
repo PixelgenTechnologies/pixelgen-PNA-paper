@@ -1,0 +1,1129 @@
+---
+title: "Annotation of PBMCs"
+format:
+  html:
+    theme: cerulean
+    page-layout: full
+    embed-resources: true
+    code_folding: show
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+params: 
+
+  sample_sheet: "../data/sample_metadata.csv"
+  data_folder: "../data/"
+  save_folder: "../results/pbmc_results/"
+  control_markers: "c('mIgG1', 'mIgG2a', 'mIgG2b')"
+  molecule_rank_cutoff: 20000
+  tau_dispersion_cutoff: 0.925
+  control_marker_cutoff: 0.15
+  norm_method: "CLR"
+  clustering_resolution: 1
+---
+
+# 
+
+
+
+```{r load_packages, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(pixelatorR)
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(ggplotify)
+source("theme.R")
+source("utility.R")
+```
+
+
+## Run settings 
+
+```{r run_settings, echo = FALSE, results = 'asis', warning = FALSE, message = FALSE}
+
+# --- Experiment parameters ---
+
+
+# Assign parameters to variables
+data_folder <- params$data_folder
+control_markers <-
+  eval(parse(text = params$control_markers))
+molecule_rank_cutoff <- params$molecule_rank_cutoff
+tau_dispersion_cutoff <- params$tau_dispersion_cutoff
+control_marker_cutoff <- params$control_marker_cutoff
+norm_method <- params$norm_method
+clustering_resolution <- params$clustering_resolution
+
+# load sample settings
+sample_sheet <- 
+  read_csv(params$sample_sheet) %>% 
+  filter(sample_alias %in% c("Resting_PBMC", "PHA_PBMC"))
+
+metadata <- 
+  sample_sheet %>% 
+  select(sample_alias, condition) 
+
+sample_aliases <- 
+  sample_sheet %>% 
+  select(sample = sample_id, sample_alias) %>% 
+  deframe()
+
+
+```
+
+
+
+```{r read_counts, echo = FALSE, warning = FALSE, message = FALSE}
+
+# Get file paths
+data_files <- 
+  tibble(filename = paste0(data_folder, sample_sheet$filename),
+         sample_alias = sample_sheet$sample_alias) 
+
+# Create a list of Seurat objects
+pg_data <- 
+  data_files %>% 
+  select(sample_alias, filename) %>% 
+  deframe() %>% 
+  lapply(ReadPNA_Seurat)
+
+stopifnot("Some samples are not loaded" = length(pg_data) == nrow(metadata))
+
+pg_data <- 
+  pg_data %>% 
+  map(. %>% 
+        AddMetaData(FetchData(., "n_umi") %>%
+                      as_tibble(rownames = "component") %>% 
+                      mutate(logmolecules = log10(n_umi), 
+                             rank = rank(-n_umi, ties.method = "random")) %>% 
+                      column_to_rownames("component"))) 
+
+
+pg_data <-
+  merge(
+    pg_data[[1]],
+    y = pg_data[-1],
+    add.cell.ids = names(pg_data)
+  ) %>% 
+  JoinLayers()
+
+pg_data <- 
+  pg_data %>% 
+  AddMetaData(colnames(pg_data) %>% 
+                enframe("i", "comp_id") %>%
+                mutate(sample_alias = str_extract(comp_id, ".*_") %>% 
+                         str_remove("_$")) %>% 
+                left_join(metadata, by = "sample_alias") %>% 
+                mutate(sample_alias = factor(sample_alias, metadata$sample_alias),
+                       condition = factor(condition, unique(metadata$condition))) %>%
+                select(-i) %>% 
+                column_to_rownames("comp_id"))
+
+
+
+
+```
+
+
+
+## Cell filtering
+
+### Molecule Rank Plot
+
+
+```{r molecule_rank_plot, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, message=FALSE, results='asis'}
+
+pg_data %>% 
+  FetchData(c("sample_alias", "n_umi", "rank")) %>% 
+  ggplot(aes(rank, n_umi, color = sample_alias)) + 
+  geom_point(size = 0.5, show.legend = FALSE) +
+  geom_hline(yintercept = molecule_rank_cutoff, linetype = "dashed", color = "#E05573") +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_bw() +
+  labs(
+    x = "Component rank (by number of protein molecules)",
+    y = "Number of protein molecules",
+    title = "Molecule rank plot")
+ggsave(
+  filename = paste0(params$save_folder, "molecule_rank_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+
+
+pg_data[[]] %>% 
+  ggplot(aes(sample_alias, n_umi, fill = condition)) +
+  geom_violin(draw_quantiles = 0.5) +
+  geom_text(data = . %>% 
+              group_by(sample_alias, condition) %>%
+              summarise(n_umi = median(n_umi)),
+            aes(label = round(n_umi))) +
+  geom_hline(yintercept = molecule_rank_cutoff, linetype = "dashed", color = "#E05573") +
+  scale_y_log10() +
+  # scale_fill_manual(values = sample_palette) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(x = "",
+       y = "Number of molecules")
+ggsave(
+  filename = paste0(params$save_folder, "molecules_by_condition.pdf"),
+  width = 8,
+  height = 5
+)
+
+```
+
+### Dispersion
+
+```{r dispersion_plot, fig.width = 8, fig.height = 8, out.width = "100%", dpi = 150, echo = FALSE}
+
+
+pg_data <- 
+  pg_data %>% 
+  AddMetaData(
+    LayerData(pg_data, "counts") %>% 
+      apply(2, function(x) sum(1 - x / max(x)) / (length(x) - 1)),
+    col.name = "tau"
+  ) 
+  
+
+
+pg_data[[]] %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  ggplot(aes(tau, n_umi, color = tau < tau_dispersion_cutoff)) +
+  geom_point(show.legend = F) +
+  geom_vline(xintercept = tau_dispersion_cutoff, linetype = "dashed", color = "#E05573") +
+  facet_wrap(~sample_alias) +
+  theme_bw() +
+  scale_color_manual(values = yes_no_palette) +
+  scale_y_log10() +
+  labs(title = "Dispersion plot",
+       y = "Number of molecules",
+       x = "Tau")
+ggsave(
+  filename = paste0(params$save_folder, "dispersion_plot.pdf"),
+  width = 8,
+  height = 8
+)
+
+```
+
+### Control Markers
+
+```{r control_marker_plot, fig.width = 8, fig.height = 8, out.width = "100%", dpi = 150, echo = FALSE}
+
+pg_data[[]] %>% 
+  as_tibble() %>% 
+  mutate(isotype_percent = 100 * isotype_fraction) %>% 
+  ggplot(aes(sample_alias, isotype_percent)) +
+  geom_violin(fill = "#DAD6D7") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_hline(yintercept = control_marker_cutoff, linetype = "dashed", color = "#E05573") +
+  geom_text(data = . %>% 
+              group_by(sample_alias) %>%
+              summarise(median_isotype_percent = median(isotype_percent)),
+            aes(y = median_isotype_percent,
+                label = paste0(round(median_isotype_percent, 2), " %")),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous(expand = expansion(c(0, 0.2))) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Percent control markers")
+ggsave(
+  filename = paste0(params$save_folder, "control_markers_plot.pdf"),
+  width = 8,
+  height = 8
+)
+
+pg_data %>% 
+  FetchData(c("sample_alias", "n_umi", "rank", "isotype_fraction")) %>% 
+  ggplot(aes(rank, n_umi, color = log10(isotype_fraction), size = isotype_fraction)) + 
+  geom_point() +
+  geom_hline(yintercept = molecule_rank_cutoff, linetype = "dashed", color = "#E05573") +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_size_continuous(range = c(0.1, 3)) +
+  scale_color_gradientn(colors = cherry_gradient(100)) +
+  theme_bw() +
+  labs(
+    x = "Component rank (by number of protein molecules)",
+    y = "Number of protein molecules",
+    title = "Molecule rank plot")
+ggsave(
+  filename = paste0(params$save_folder, "molecule_rank_plot_control_markers.pdf"),
+  width = 8,
+  height = 8
+)
+```
+
+
+### Cell filtering
+
+Here we summarise the filtering of small cells, dispersion outliers, as well as control outliers.
+
+```{r cell_filtering_plot, message=FALSE, warning = FALSE, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, results = 'asis'}
+plot_data <- 
+  expand_grid(sample_alias = unique(pg_data[[]]$sample_alias),
+              size_outlier = c(FALSE, TRUE),
+              dispersion_outlier = c(FALSE, TRUE),
+              control_outlier = c(FALSE, TRUE)) %>% 
+  mutate(n_true = size_outlier + dispersion_outlier + control_outlier) %>%
+  arrange(n_true, size_outlier, dispersion_outlier + control_outlier) %>%
+  left_join(pg_data[[]] %>% 
+              as_tibble(rownames = "sample_component") %>% 
+              mutate(size_outlier = n_umi <= molecule_rank_cutoff,
+                     dispersion_outlier = tau <= tau_dispersion_cutoff,
+                     control_outlier = 100 * isotype_fraction >= control_marker_cutoff) %>%
+              group_by(sample_alias, size_outlier, dispersion_outlier, control_outlier) %>%
+              count() %>% 
+              ungroup()) %>% 
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  
+  group_by(sample_alias) %>% 
+  mutate(column = row_number()) 
+
+
+p1 <- 
+  plot_data %>% 
+  pivot_longer(cols = c(size_outlier, dispersion_outlier, control_outlier)) %>%
+  mutate(name = factor(name, c("size_outlier", "dispersion_outlier", "control_outlier"))) %>% 
+  ggplot(aes(column, name, fill = value)) +
+  geom_point(size = 4,
+             shape = 21,
+             show.legend = F) +
+  scale_fill_manual(values = c("FALSE" = "white", "TRUE" = "black")) +
+  scale_x_discrete(expand = expansion(mult = c(0.05, 0.05), add = c(0.5, 0.5))) +
+  coord_equal() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title = element_blank(), 
+        panel.grid = element_blank(),
+        panel.background = element_blank())
+
+
+p2 <-
+  plot_data %>% 
+  mutate(`QC Cell\nfiltering` = ifelse(size_outlier | dispersion_outlier | control_outlier,
+                                       "Removed cell", "Kept cell")) %>%
+  ggplot(aes(column, n, fill = `QC Cell\nfiltering`)) +
+  geom_col() +
+  geom_text(aes(label = n), 
+            vjust = 0) +
+  facet_wrap(~sample_alias, ncol = 1) +  
+  scale_y_continuous(expand = expansion(c(0, 0.15))) +
+  scale_fill_manual(values = yes_no_palette) +
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(), 
+        panel.grid = element_blank(),
+        panel.background = element_blank()) +
+  labs(y = "Number of cells")
+
+p2 / p1
+ggsave(
+  filename = paste0(params$save_folder, "cell_filtering_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+```
+
+
+```{r cell_filtering, echo = FALSE, include = FALSE}
+pg_data_processed <- 
+  pg_data %>% 
+  subset(subset = n_umi > molecule_rank_cutoff) %>%
+  subset(subset = tau > tau_dispersion_cutoff) %>% 
+  subset(subset = 100 * isotype_fraction < control_marker_cutoff) 
+
+rm(pg_data)
+gc()
+```
+
+
+
+
+
+## Quality metrics
+
+### Sequencing
+
+#### Reads per cell 
+
+```{r qc_metrics_reads_per_cell_figure, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, results = 'asis'}
+
+
+plot_data <- 
+  pg_data_processed[[]] %>% 
+  as_tibble() %>% 
+  select(sample_alias, reads_in_component) 
+
+plot_data_sum <- 
+  plot_data %>% 
+  group_by(sample_alias) %>%
+  summarise(median_reads_in_component = median(reads_in_component))
+
+plot_data %>% 
+  ggplot(aes(sample_alias, reads_in_component)) +
+  geom_violin(fill = "#DAD6D7") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum, 
+            aes(y = median_reads_in_component,
+                label = paste0(round(median_reads_in_component / 1e3), "k")),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_log10() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Reads per cell")
+ggsave(
+  filename = paste0(params$save_folder, "reads_per_cell_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+
+```
+
+#### k-coreness 
+
+```{r qc_metrics_nodes_kcore_figure, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, message=FALSE, results = 'asis'}
+
+
+plot_data <- 
+  pg_data_processed[[]] %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  select(1, sample_alias, n_umi, matches("^k_core")) %>% 
+  pivot_longer(cols = matches("k_core"), 
+               names_to = "k_core", values_to = "nodes") %>% 
+  mutate(nodes = ifelse(!is.finite(nodes), 0, nodes),
+         percent_nodes = 100 * nodes / n_umi,
+         coreness = as.numeric(str_extract(k_core, "[0-9]+"))) 
+
+plot_data_sum <- 
+  plot_data %>% 
+  group_by(sample_component, sample_alias) %>% 
+  summarise(mean_coreness = weighted.mean(coreness, nodes),
+            percent_dangling_nodes = percent_nodes[coreness == 1],
+            percent_well_connected_nodes = sum(percent_nodes[coreness %in% 3:5])) 
+
+plot_data_sum_sample <-
+  plot_data_sum %>%  
+  group_by(sample_alias) %>% 
+  summarise(median_mean_coreness = median(mean_coreness),
+            median_percent_dangling_nodes = median(percent_dangling_nodes),
+            median_percent_well_connected_nodes = median(percent_well_connected_nodes))
+
+# Mean coreness
+p <- 
+  plot_data_sum %>% 
+  ggplot(aes(sample_alias, mean_coreness)) +
+  geom_violin(fill = "#DAD6D7",
+              scale = "width") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum_sample,
+            aes(y = median_mean_coreness,
+                label = round(median_mean_coreness, 2)),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Mean coreness", 
+       title = "Mean Coreness",
+       subtitle = "The average coreness of nodes in each component")
+
+print(p)
+ggsave(
+  filename = paste0(params$save_folder, "mean_coreness_plot.pdf"),
+  width = 8,
+  height = 5
+)
+# Dangling nodes - % coreness 1
+p <- 
+  plot_data_sum %>% 
+  ggplot(aes(sample_alias, percent_dangling_nodes)) +
+  geom_violin(fill = "#DAD6D7",
+              scale = "width") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum_sample,
+            aes(y = median_percent_dangling_nodes,
+                label = round(median_percent_dangling_nodes, 2)),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Dangling nodes [%]", 
+       title = "Percent dangling nodes",
+       subtitle = "The percentage of nodes with coreness 1")
+
+print(p)
+
+ggsave(
+  filename = paste0(params$save_folder, "dangling_nodes_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+# Well-connected nodes - % coreness 3-5
+p <- 
+  plot_data_sum %>% 
+  ggplot(aes(sample_alias, percent_well_connected_nodes)) +
+  geom_violin(fill = "#DAD6D7",
+              scale = "width") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum_sample,
+            aes(y = median_percent_well_connected_nodes,
+                label = round(median_percent_well_connected_nodes, 2)),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Well-connected nodes [%]", 
+       title = "Percent well-connected nodes",
+       subtitle = "The percentage of nodes with coreness 3-5")
+
+print(p)
+
+ggsave(
+  filename = paste0(params$save_folder, "well_connected_nodes_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+```
+
+### Marker composition
+
+
+#### Control markers 
+
+```{r qc_metrics_frac_control_figure, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, results = 'asis'}
+
+plot_data <- 
+  pg_data_processed[[]] %>% 
+  as_tibble() %>% 
+  mutate(isotype_percent = 100 * isotype_fraction,
+         isotype_counts = round(isotype_fraction * n_umi, 0)) 
+
+plot_data_sum <- 
+  plot_data %>% 
+  group_by(sample_alias) %>%
+  summarise(median_isotype_percent = median(isotype_percent),
+            median_isotype_counts = median(isotype_counts))
+
+
+p <- 
+  plot_data %>% 
+  ggplot(aes(sample_alias, isotype_percent)) +
+  geom_violin(fill = "#DAD6D7") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum, 
+            aes(y = median_isotype_percent,
+                label = paste0(round(median_isotype_percent, 2), " %")),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous(expand = expansion(c(0, 0.2))) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Percent control markers")
+
+print(p)
+
+ggsave(
+  filename = paste0(params$save_folder, "control_markers_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+p <- 
+  plot_data %>% 
+  ggplot(aes(sample_alias, isotype_counts + 1)) +
+  geom_violin(fill = "#DAD6D7") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum, 
+            aes(y = median_isotype_counts,
+                label = median_isotype_counts),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_log10(expand = expansion(c(0, 0.2))) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Control markers counts")
+
+print(p)
+ggsave(
+  filename = paste0(params$save_folder, "control_markers_counts_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+```
+
+
+## Data Processing 
+
+### Dimred and clustering
+
+```{r data_processing, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+pg_data_processed <- 
+  pg_data_processed %>%
+  NormalizeData(normalization.method = norm_method, margin = 2) %>%
+  FindVariableFeatures(nfeatures = 50) %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(reduction = "pca", dims = 1:20) 
+
+VariableFeatures(pg_data_processed)
+
+
+pg_data_processed <- 
+  pg_data_processed %>% 
+  RunHarmony(
+    group.by.vars = "condition",
+    plot_convergence = FALSE, 
+  ) %>% 
+  RunUMAP(reduction = "harmony", dims = 1:20, 
+          reduction.name = "harmony_umap") %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:10) %>% 
+  FindClusters(random.seed = 1, resolution = clustering_resolution)
+
+plot_embedding(pg_data_processed, "harmony_umap",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+plot_embedding(pg_data_processed, "harmony_umap",
+                 metavars = "sample_alias",
+                 # pal = cell_palette,
+                 plot_title = "samples")
+
+
+plot_embedding(pg_data_processed, "harmony",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+plot_embedding(pg_data_processed, "harmony",
+                 metavars = "sample_alias",
+                 # pal = cell_palette,
+                 plot_title = "samples")
+
+plot_embedding(pg_data_processed, "pca",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+plot_embedding(pg_data_processed, "pca",
+                 metavars = "sample_alias",
+                 # pal = cell_palette,
+                 plot_title = "samples")
+
+FeaturePlot(pg_data_processed, 
+             features = c(control_markers, "isotype_fraction"),
+             reduction = "harmony",
+             ncol = 3,
+             pt.size = 0.1) 
+
+VlnPlot(pg_data_processed, 
+         features = c(control_markers, "isotype_fraction"),
+         group.by = "condition")
+
+
+pg_data_processed_pca <- 
+  Reductions(pg_data_processed, "pca")
+
+pg_data_processed_pca@feature.loadings %>% 
+  as_tibble(rownames = "marker") %>%
+  arrange(-abs(PC_1)) %>% 
+  print(n = 30)
+
+```
+
+
+### PCA
+
+```{r dimred_pca, fig.width = 10, fig.height = 7, message=FALSE, warning=FALSE, echo = FALSE}
+p1 <- 
+  plot_embedding(pg_data_processed, "pca",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+
+p2 <- 
+  plot_embedding(pg_data_processed, "pca", 
+                 metavars = "sample_alias", 
+                 # pal = sample_palette, 
+                 plot_title = "Samples", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+p3 <- 
+  plot_embedding(pg_data_processed, "pca", 
+                 metavars = "condition", 
+                 # pal = sample_palette, 
+                 plot_title = "Conditions", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+
+p1 | p2 | p3
+ggsave(
+  filename = paste0(params$save_folder, "pca_plot.pdf"),
+  width = 10,
+  height = 7
+)
+```
+
+
+```{r dimred_pca_harmony, fig.width = 10, fig.height = 5, message=FALSE, warning=FALSE, echo = FALSE}
+
+
+p1 <- 
+  plot_embedding(pg_data_processed, "harmony",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+p2 <- 
+  plot_embedding(pg_data_processed, "harmony", 
+                 metavars = "sample_alias", 
+                 # pal = sample_palette, 
+                 plot_title = "Samples", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+p3 <- 
+  plot_embedding(pg_data_processed, "harmony", 
+                 metavars = "condition", 
+                 # pal = sample_palette, 
+                 plot_title = "Conditions", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+
+p <- p1 | p2 | p3
+print(p)
+ggsave(
+  filename = paste0(params$save_folder, "harmony_pca_plot.pdf"),
+  plot = p,
+  width = 10,
+  height = 5
+)
+
+```
+
+
+
+### UMAP
+
+```{r dimred_umap, fig.width = 10, fig.height = 7, message=FALSE, warning=FALSE, echo = FALSE}
+p1 <- 
+  plot_embedding(pg_data_processed, "umap",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+p2 <- 
+  plot_embedding(pg_data_processed, "umap", 
+                 metavars = "sample_alias", 
+                 # pal = sample_palette, 
+                 plot_title = "Samples", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+p3 <- 
+  plot_embedding(pg_data_processed, "umap", 
+                 metavars = "condition", 
+                 # pal = sample_palette, 
+                 plot_title = "Conditions", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+
+p1 | p2 | p3
+ggsave(
+  filename = paste0(params$save_folder, "umap_plot.pdf"),
+  width = 10,
+  height = 7
+)
+
+```
+
+
+
+```{r dimred_umap_harmony, fig.width = 10, fig.height = 5, message=FALSE, warning=FALSE, echo = FALSE}
+
+p1 <- 
+  plot_embedding(pg_data_processed, "harmony_umap",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+p2 <- 
+  plot_embedding(pg_data_processed, "harmony_umap", 
+                 metavars = "sample_alias", 
+                 # pal = sample_palette, 
+                 plot_title = "Samples", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+p3 <- 
+  plot_embedding(pg_data_processed, "harmony_umap", 
+                 metavars = "condition", 
+                 # pal = sample_palette, 
+                 plot_title = "Conditions", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+
+p <- p1 | p2 | p3
+print(p)
+ggsave(
+  filename = paste0(params$save_folder, "harmony_umap_plot.pdf"),
+  plot = p,
+  width = 10,
+  height = 5
+)
+
+```
+
+
+
+
+
+## Resting cells 
+
+### Dimred and clustering
+
+```{r data_processing, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+annotation_markers <-
+  c("CD10", "CD117", "CD11a", "CD11b", 
+    "CD11c", "CD123", "CD127", "CD138", "CD14", "CD141", "CD158", 
+    "CD159a", "CD159c", "CD16", "CD19", "CD1c", "CD20", "CD24", "CD25", 
+    "CD27", "CD28", "CD3e", "CD335", "CD337", "CD35", "CD38", 
+    "CD4", "CD8", "CD45RA", "CD45RO", "CD56", "CD57", "CD58", "CD66b", "CD95", 
+    "HLA-DR", "IgD", "TCRgd", "TCRva7.2", "TCRVd2", "TCRVg9", 
+    "CD41", "CD9", 
+    
+    "TCRab", "CD45", "CD45RB", "CD2", "CD5", "CD26", "CD161", 
+    "CD21", "CD22", "CD33", "CD79a", "CD7", "IgE", "IgM", "NKp80")
+
+
+pg_data_resting <- 
+  pg_data_processed %>%
+  subset(condition == "Resting PBMCs") %>% 
+  NormalizeData(normalization.method = norm_method, margin = 2) %>%
+  FindVariableFeatures(nfeatures = 75) %>%
+  ScaleData() 
+
+VariableFeatures(pg_data_resting)[!VariableFeatures(pg_data_resting) %in% annotation_markers] 
+rownames(pg_data_resting)[!rownames(pg_data_resting) %in% annotation_markers] %>% sort()
+
+pg_data_resting <- 
+  pg_data_resting %>% 
+  RunPCA(features = unique(c(annotation_markers, VariableFeatures(pg_data_resting)))) %>%
+  RunUMAP(reduction = "pca", dims = 1:15, n.neighbors = 12) 
+
+Reductions(pg_data_resting, "pca")@stdev %>% 
+  enframe("PC", "sd") %>% 
+  ggplot(aes(PC, sd)) +
+  geom_line() +
+  geom_point()
+  
+pg_data_resting <- 
+  pg_data_resting %>% 
+  FindNeighbors(reduction = "pca", dims = 1:15, k.param = 12) %>% 
+  FindClusters(random.seed = 1, resolution = 1.5)
+
+plot_embedding(pg_data_resting, "umap",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+plot_embedding(pg_data_resting, "umap",
+                 metavars = "sample_alias",
+                 # pal = cell_palette,
+                 plot_title = "samples")
+
+# NK
+nk_markers <- 
+  c("CD56", "CD16", "CD159a", 
+    "CD158", "CD159c", "CD57",
+    "CD335", "CD337")
+FeaturePlot(pg_data_resting, 
+            features = nk_markers)
+VlnPlot(pg_data_resting, 
+         features = nk_markers,
+         group.by = "seurat_clusters")
+
+# Granulocytes & Mast
+granmast_markers <- 
+  c("CD11b", "CD14", "CD25", "CD35", 
+    "CD117", "CD10", "CD24", "CD66b")
+FeaturePlot(pg_data_resting, 
+            features = granmast_markers)
+VlnPlot(pg_data_resting, 
+         features = granmast_markers,
+         group.by = "seurat_clusters")
+
+# DC
+dc_markers <- 
+  c("CD14", "HLA-DR", "CD11c",
+    "CD123", "CD141", "CD1c")
+FeaturePlot(pg_data_resting, 
+            features = dc_markers)
+VlnPlot(pg_data_resting,
+         features = dc_markers,
+         group.by = "seurat_clusters")
+
+# Monocytes
+mono_markers <- 
+  c("CD14", "CD16",
+    "HLA-DR", "HLA-DR-DP-DQ")
+FeaturePlot(pg_data_resting, 
+            features = mono_markers)
+VlnPlot(pg_data_resting,
+         features = mono_markers,
+         group.by = "seurat_clusters")
+
+# B cells
+b_markers <- 
+  c("CD19", "CD38", "CD27",
+    "IgD", "CD138", "CD20")
+FeaturePlot(pg_data_resting, 
+            features = b_markers)
+VlnPlot(pg_data_resting,
+         features = b_markers,
+         group.by = "seurat_clusters")
+
+
+# T cells
+t_markers <- 
+  c("TCRva7.2", "TCRgd", "CD3e", "CD45RA",
+    "CD4", "CD8", "CD45RO", "TCRVd2", "CD25", "CD28",
+    "TCRVg9", "CD127", "CD95", "CD27", "CD127",
+    "CD57", "CD11a", "CD58", "CD161")
+FeaturePlot(pg_data_resting, 
+            features = t_markers)
+VlnPlot(pg_data_resting,
+         features = t_markers,
+         group.by = "seurat_clusters")
+
+
+FetchData(pg_data_resting, c("seurat_clusters", annotation_markers), 
+          layer = "data") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  pivot_longer(cols = -c(sample_component, seurat_clusters), names_to = "marker", values_to = "value") %>%
+  group_by(cluster = seurat_clusters, marker) %>%
+  summarise(mean = mean(value)) %>% 
+  pivot_wider(names_from = marker, values_from = mean) %>%
+  column_to_rownames("cluster") %>%
+  sweep(2, apply(., 2, max), "/") %>%
+  ComplexHeatmap::pheatmap(
+    fontsize = 8,
+    cellwidth = 8,
+    cellheight = 8,
+    clustering_method = "ward.D2",
+    color = cherry_gradient(100),
+    width = 8,
+    height = 10
+  )
+
+
+DensityScatterPlot(pg_data_resting, 
+                   layer = "data",
+                   margin_density = FALSE,
+                   gate_type = "quadrant",
+                   plot_gate = tibble(x = 2, y = 3),
+                   marker1 = "CD3e", 
+                   marker2 = "CD45")
+
+
+
+
+
+plot_embedding(pg_data_processed, "harmony",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+plot_embedding(pg_data_processed, "harmony",
+                 metavars = "sample_alias",
+                 # pal = cell_palette,
+                 plot_title = "samples")
+
+plot_embedding(pg_data_processed, "pca",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+plot_embedding(pg_data_processed, "pca",
+                 metavars = "sample_alias",
+                 # pal = cell_palette,
+                 plot_title = "samples")
+
+FeaturePlot(pg_data_processed, 
+             features = c(control_markers, "isotype_fraction"),
+             reduction = "harmony",
+             ncol = 3,
+             pt.size = 0.1) 
+
+VlnPlot(pg_data_processed, 
+         features = c(control_markers, "isotype_fraction"),
+         group.by = "condition")
+
+
+pg_data_processed_pca <- 
+  Reductions(pg_data_processed, "pca")
+
+pg_data_processed_pca@feature.loadings %>% 
+  as_tibble(rownames = "marker") %>%
+  arrange(-abs(PC_1)) %>% 
+  print(n = 30)
+
+```
+
+
+### PCA
+
+```{r dimred_pca, fig.width = 10, fig.height = 7, message=FALSE, warning=FALSE, echo = FALSE}
+p1 <- 
+  plot_embedding(pg_data_processed, "pca",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+
+p2 <- 
+  plot_embedding(pg_data_processed, "pca", 
+                 metavars = "sample_alias", 
+                 # pal = sample_palette, 
+                 plot_title = "Samples", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+p3 <- 
+  plot_embedding(pg_data_processed, "pca", 
+                 metavars = "condition", 
+                 # pal = sample_palette, 
+                 plot_title = "Conditions", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+
+p1 | p2 | p3
+ggsave(
+  filename = paste0(params$save_folder, "pca_plot.pdf"),
+  width = 10,
+  height = 7
+)
+```
+
+
+```{r dimred_pca_harmony, fig.width = 10, fig.height = 5, message=FALSE, warning=FALSE, echo = FALSE}
+
+
+p1 <- 
+  plot_embedding(pg_data_processed, "harmony",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+p2 <- 
+  plot_embedding(pg_data_processed, "harmony", 
+                 metavars = "sample_alias", 
+                 # pal = sample_palette, 
+                 plot_title = "Samples", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+p3 <- 
+  plot_embedding(pg_data_processed, "harmony", 
+                 metavars = "condition", 
+                 # pal = sample_palette, 
+                 plot_title = "Conditions", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+
+p <- p1 | p2 | p3
+print(p)
+ggsave(
+  filename = paste0(params$save_folder, "harmony_pca_plot.pdf"),
+  plot = p,
+  width = 10,
+  height = 5
+)
+
+```
+
+
+
+### UMAP
+
+```{r dimred_umap, fig.width = 10, fig.height = 7, message=FALSE, warning=FALSE, echo = FALSE}
+p1 <- 
+  plot_embedding(pg_data_processed, "umap",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+p2 <- 
+  plot_embedding(pg_data_processed, "umap", 
+                 metavars = "sample_alias", 
+                 # pal = sample_palette, 
+                 plot_title = "Samples", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+p3 <- 
+  plot_embedding(pg_data_processed, "umap", 
+                 metavars = "condition", 
+                 # pal = sample_palette, 
+                 plot_title = "Conditions", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+
+p1 | p2 | p3
+ggsave(
+  filename = paste0(params$save_folder, "umap_plot.pdf"),
+  width = 10,
+  height = 7
+)
+
+```
+
+
+
+```{r dimred_umap_harmony, fig.width = 10, fig.height = 5, message=FALSE, warning=FALSE, echo = FALSE}
+
+p1 <- 
+  plot_embedding(pg_data_processed, "harmony_umap",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+p2 <- 
+  plot_embedding(pg_data_processed, "harmony_umap", 
+                 metavars = "sample_alias", 
+                 # pal = sample_palette, 
+                 plot_title = "Samples", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+p3 <- 
+  plot_embedding(pg_data_processed, "harmony_umap", 
+                 metavars = "condition", 
+                 # pal = sample_palette, 
+                 plot_title = "Conditions", 
+                 label = FALSE, 
+                 legend_position = "bottom")
+
+p <- p1 | p2 | p3
+print(p)
+ggsave(
+  filename = paste0(params$save_folder, "harmony_umap_plot.pdf"),
+  plot = p,
+  width = 10,
+  height = 5
+)
+
+```
+
+

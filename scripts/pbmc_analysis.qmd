@@ -33,6 +33,7 @@ library(Seurat)
 library(harmony)
 library(tidyverse)
 library(ggplotify)
+library(tidygraph)
 source("theme.R")
 source("utility.R")
 ```
@@ -804,7 +805,6 @@ ggsave(
 ### Dimred and clustering
 
 ```{r data_processing, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
-
 annotation_markers <-
   c("CD10", "CD117", "CD11a", "CD11b", 
     "CD11c", "CD123", "CD127", "CD138", "CD14", "CD141", "CD158", 
@@ -831,7 +831,7 @@ rownames(pg_data_resting)[!rownames(pg_data_resting) %in% annotation_markers] %>
 pg_data_resting <- 
   pg_data_resting %>% 
   RunPCA(features = unique(c(annotation_markers, VariableFeatures(pg_data_resting)))) %>%
-  RunUMAP(reduction = "pca", dims = 1:15, n.neighbors = 12) 
+  RunUMAP(reduction = "pca", dims = 1:15, n.neighbors = 15, seed.use = 37) 
 
 Reductions(pg_data_resting, "pca")@stdev %>% 
   enframe("PC", "sd") %>% 
@@ -841,8 +841,8 @@ Reductions(pg_data_resting, "pca")@stdev %>%
   
 pg_data_resting <- 
   pg_data_resting %>% 
-  FindNeighbors(reduction = "pca", dims = 1:15, k.param = 12) %>% 
-  FindClusters(random.seed = 1, resolution = 1.5)
+  FindNeighbors(reduction = "pca", dims = 1:15, k.param = 15) %>% 
+  FindClusters(random.seed = 37, resolution = 3)
 
 plot_embedding(pg_data_resting, "umap",
                  metavars = "seurat_clusters",
@@ -936,194 +936,1348 @@ FetchData(pg_data_resting, c("seurat_clusters", annotation_markers),
     width = 8,
     height = 10
   )
+```
+
+### Gate annotation
+
+```{r gate_overview, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+library(ggraph)
+
+# Plot the gate hierarchy
+annotation_hierarchy <- 
+  read_csv("../data/annotation_hierarchy.csv") 
+
+annotation_hierarchy_graph <- 
+  annotation_hierarchy %>% 
+  as_tbl_graph() %>%
+  mutate(leaf = node_is_leaf()) 
+
+annotation_hierarchy_graph %>% 
+  ggraph::ggraph(layout = "dendrogram", circular = F) +
+  # geom_edge_link() +
+  geom_edge_elbow(aes(label = Gate), 
+                  hjust = 0, 
+                  vjust = -0.3,
+                  label_size = 2,
+                  label_colour = "gray30") +
+  # geom_node_point(size = 5) +
+  geom_node_point(size = 0.5) +
+  
+  # geom_node_point(data = . %>% 
+  #                  filter(leaf), 
+  #                 aes(color = name),
+  #                 show.legend = FALSE,
+  #                 size = 5) +
+  geom_node_text(data = . %>% 
+                   filter(leaf), 
+                 aes(label = name), 
+                 hjust = 0, 
+                 nudge_y = 0.05, 
+                 size = 3) +
+  
+  scale_y_reverse(expand = expansion(c(0.1, 0.3))) +
+  scale_color_manual(values = pbmc_cell_type_palette) +
+  coord_flip() +
+  theme_void()
+
+ggsave(
+  filename = paste0(params$save_folder, "annotation_hierarchy_plot.pdf"),
+  width = 10,
+  height = 5
+)
 
 
-DensityScatterPlot(pg_data_resting, 
+annotation_hierarchy_graph %>% 
+  ggraph::ggraph(layout = "dendrogram", circular = F) +
+  # geom_edge_link() +
+  geom_edge_elbow(aes(label = Gate), 
+                  hjust = 0, 
+                  vjust = -0.3,
+                  label_size = 2,
+                  label_colour = "gray30") +
+  # geom_node_point(size = 5) +
+  geom_node_point(size = 0.5) +
+  
+  geom_node_point(data = . %>% 
+                   filter(leaf), 
+                  aes(color = name),
+                  show.legend = FALSE,
+                  size = 5) +
+  geom_node_text(data = . %>% 
+                   filter(leaf), 
+                 aes(label = name), 
+                 hjust = 0, 
+                 nudge_y = 0.05, 
+                 size = 3) +
+  
+  scale_y_reverse(expand = expansion(c(0.1, 0.3))) +
+  scale_color_manual(values = pbmc_cell_type_palette) +
+  coord_flip() +
+  theme_void()
+
+ggsave(
+  filename = paste0(params$save_folder, "annotation_hierarchy_plot2.pdf"),
+  width = 10,
+  height = 5
+)
+
+
+annotated_cells <- 
+  list()
+```
+
+#### Platelets
+```{r anno_plats, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+pg_data_annotated <- 
+  pg_data_resting
+
+# CD41+, CD45- (Platelets / Leukocytes)
+DensityScatterPlot(pg_data_annotated, 
                    layer = "data",
                    margin_density = FALSE,
-                   gate_type = "quadrant",
-                   plot_gate = tibble(x = 2, y = 3),
-                   marker1 = "CD3e", 
+                   gate_type = "rectangle",
+                   plot_gate = tibble(xmin = 6, xmax = 8.5,
+                                      ymin = 1, ymax = 3.5),
+                   marker1 = "CD41", 
                    marker2 = "CD45")
+ggsave(
+  filename = paste0(params$save_folder, "CD41_CD45_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["Platelets"]] <- 
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD41 > 6 & CD45 < 3.5) %>%
+  colnames()
+```
+
+
+#### Granulocytes
+
+```{r anno_grans, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+# Granulocytes
+
+
+## Basophils (CD123+, CD193+, CD66b-)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0.3, xmax = 1.5,
+                                        ymin = 4, ymax = 6),
+                     marker1 = "CD193", 
+                     marker2 = "CD123")
+ggsave(
+  filename = paste0(params$save_folder, "CD193_CD123_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     marker1 = "CD193", 
+                     marker2 = "CD66b")
+ggsave(
+  filename = paste0(params$save_folder, "CD193_CD66b_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["Basophils"]] <- 
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD193 > 0.3 & CD123 > 4 & CD66b < 1) %>%
+  colnames()
+
+## Neutrophils (CD66b+, CD16+)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0.8, xmax = 2,
+                                        ymin = 1, ymax = 2.5),
+                     marker1 = "CD66b", 
+                     marker2 = "CD16")
+ggsave(
+  filename = paste0(params$save_folder, "CD66b_CD16_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["Neutrophils"]] <- 
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD66b > 0.8 & CD16 > 1) %>%
+  colnames()
+
+
+## Eosinophils (CD66b+, CD193+)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     marker1 = "CD193", 
+                     marker2 = "CD66b")
+ggsave(
+  filename = paste0(params$save_folder, "CD193_CD66b_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+
+
+```
+
+#### B
+
+```{r anno2_B, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+# CD3-, CD19+, CD20+ (B cells)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0, xmax = 1.5,
+                                        ymin = 0.8, ymax = 4.5),
+                     marker1 = "CD3e", 
+                     marker2 = "CD19")
+ggsave(
+  filename = paste0(params$save_folder, "CD3e_CD19_gate.pdf"),
+  width = 4,
+  height = 4
+)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0, xmax = 1.5,
+                                        ymin = 0.8, ymax = 4.5),
+                     marker1 = "CD3e", 
+                     marker2 = "CD20")
+ggsave(
+  filename = paste0(params$save_folder, "CD3e_CD20_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["B"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD3e < 1.5 & (CD19 > 0.8 | CD20 > 0.8)) %>%
+  colnames()
+
+# Naive B cells (IgD+, CD27-) 
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["B"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 2, xmax = 5,
+                                        ymin = 0, ymax = 1.5),
+                     marker1 = "IgD", 
+                     marker2 = "CD27")
+ggsave(
+  filename = paste0(params$save_folder, "IgD_CD27_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+# Plasma cells (CD20-, CD38+)
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["B"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0, xmax = 2.2,
+                                        ymin = 2.2, ymax = 4.1),
+                     marker1 = "CD20", 
+                     marker2 = "CD38")
+ggsave(
+  filename = paste0(params$save_folder, "CD20_CD38_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+
+annotated_cells[["Plasma cells"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["B"]]) %>% 
+  subset(CD20 < 2.2 & CD38 > 2.2) %>%
+  colnames()
+
+annotated_cells[["Naive B"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["B"]], annotated_cells[["Plasma cells"]])) %>%
+  subset(IgD > 2 & CD27 < 1.5) %>%
+  colnames()
+
+
+# Memory B cells (CD27+) 
+pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["B"]], c(annotated_cells[["Plasma cells"]], 
+                                                   annotated_cells[["Naive B"]]))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0, xmax = 5.5,
+                                        ymin = 1, ymax = 4),
+                     marker1 = "CD24", 
+                     marker2 = "CD27")
+ggsave(
+  filename = paste0(params$save_folder, "CD24_CD27_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["Memory B"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["B"]], c(annotated_cells[["Plasma cells"]],
+                                                   annotated_cells[["Naive B"]]))) %>%
+  subset(CD27 > 1) %>%
+  colnames()
+
+
+pg_data_annotated %>% 
+  LayerData(layer = "data") %>% 
+  t() %>% 
+  scale() %>% 
+  t() %>% 
+  {.[, setdiff(annotated_cells[["B"]], 
+               c(annotated_cells[["Plasma cells"]],
+                 annotated_cells[["Naive B"]],
+                 annotated_cells[["Memory B"]]))]} %>% 
+  {.[which(apply(., 1, function(x) any(x > 2)) | rownames(.) %in% c("CD27")) ,]} %>% 
+  ComplexHeatmap::pheatmap(breaks = seq(-3, 3, 0.1),
+                           color = heatmap_gradient(100),
+                           fontsize = 6,
+                           cellwidth = 6,
+                           cellheight = 6,
+                           clustering_method = "ward.D2", 
+                           # cutree_cols = 4,
+                           width = 8,
+                           height = 10)
+
+```
+
+#### T/NK
+
+
+```{r anno2_TNK, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+# CD2+, CD3+ (T cells)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0, xmax = 6,
+                                        ymin = 2, ymax = 6),
+                     marker1 = "CD2", 
+                     marker2 = "CD3e")
+ggsave(
+  filename = paste0(params$save_folder, "CD2_CD3e_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+# CD3-, CD56+ (NK cells)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0, xmax = 2,
+                                        ymin = 0.5, ymax = 5),
+                     marker1 = "CD3e", 
+                     marker2 = "CD56")
+ggsave(
+  filename = paste0(params$save_folder, "CD3e_CD56_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+# CD335+, CD337+ (NK cells)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0.5, xmax = 5,
+                                        ymin = 0.5, ymax = 5),
+                     marker1 = "CD337", 
+                     marker2 = "CD335")
+ggsave(
+  filename = paste0(params$save_folder, "CD337_CD335_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["T"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD3e > 2) %>%
+  colnames()
+
+annotated_cells[["NK"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD3e < 2 & (CD56 > 0.5 | (CD335 > 0.5 & CD337 > 0.5))) %>%
+  colnames()
+
+# CD56 bright/dim NK
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["NK"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 4.5, xmax = 5.5,
+                                        ymin = 3.5, ymax = 4.5),
+                     marker1 = "CD2", 
+                     marker2 = "CD56")
+ggsave(
+  filename = paste0(params$save_folder, "CD2_CD56_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["CD56bright NK"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["NK"]]) %>% 
+  subset(CD56 > 3.5) %>%
+  colnames()
+
+annotated_cells[["CD56dim NK"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["NK"]]) %>% 
+  subset(CD56 < 3) %>%
+  colnames()
+
+
+# Memory NK
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["NK"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     marker1 = "CD57", 
+                     marker2 = "CD159c")
+ggsave(
+  filename = paste0(params$save_folder, "CD57_CD159c_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+# TCRab / TCRgd 
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["T"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 2, xmax = 5,
+                                        ymin = 0, ymax = 2),
+                     marker1 = "TCRVd2", 
+                     marker2 = "TCRgd")
+ggsave(
+  filename = paste0(params$save_folder, "TCRVd2_TCRgd_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["T"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 2, xmax = 5,
+                                        ymin = 0, ymax = 2),
+                     marker1 = "TCRVg9", 
+                     marker2 = "TCRgd")
+ggsave(
+  filename = paste0(params$save_folder, "TCRVg9_TCRgd_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["T"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0, xmax = 0.4,
+                                        ymin = 0, ymax = 3.3),
+                     marker1 = "TCRab", 
+                     marker2 = "TCRgd")
+ggsave(
+  filename = paste0(params$save_folder, "TCRab_TCRgd_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["gdT"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["T"]]) %>% 
+  subset(TCRVd2 > 2 | TCRVg9 > 2 | TCRab < 0.4) %>%
+  colnames()
+
+annotated_cells[["TCRab"]] <- setdiff(annotated_cells[["T"]], annotated_cells[["TCRgd"]])
+  
+
+
+# NKT cells (CD56+, CD3+)
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["TCRab"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0.8, xmax = 2,
+                                        ymin = 4, ymax = 6),
+                     marker1 = "CD56", 
+                     marker2 = "CD3e")
+ggsave(
+  filename = paste0(params$save_folder, "CD56_CD3e_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["NKT"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["TCRab"]]) %>% 
+  subset(CD56 > 0.8 & CD3e > 4) %>%
+  colnames()
+
+
+
+# MAIT cells (TCRva7.2+, CD27+/-)
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["TCRab"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 1.3, xmax = 4,
+                                        ymin = 0, ymax = 4.3),
+                     marker1 = "TCRva7.2", 
+                     marker2 = "CD27")
+ggsave(
+  filename = paste0(params$save_folder, "TCRva7.2_CD27_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["MAIT"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["TCRab"]]) %>% 
+  subset(TCRva7.2 > 1.3) %>%
+  colnames()
+
+
+# DNT/DPT (CD4, CD8)
+pg_data_annotated %>% 
+  subset(cells = annotated_cells[["TCRab"]]) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = c(0, 1.3), 
+                                        xmax = c(1, 3),
+                                        ymin = c(0, 2.3), 
+                                        ymax = c(2, 4.5)),
+                     marker1 = "CD4", 
+                     marker2 = "CD8")
+ggsave(
+  filename = paste0(params$save_folder, "DPDN_CD4_CD8_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["DNT"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["TCRab"]]) %>% 
+  subset(CD4 < 1 & CD8 < 2) %>%
+  colnames()
+
+annotated_cells[["DPT"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["TCRab"]]) %>% 
+  subset(CD4 > 1.3 & CD8 > 2.3) %>%
+  colnames()
+
+
+# CD4/CD8 (CD4, CD8)
+pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["TCRab"]], 
+                                 c(annotated_cells[["DNT"]], 
+                                   annotated_cells[["DPT"]]))) %>%
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = c(0, 1.3), 
+                                        xmax = c(1.3, 4.5),
+                                        ymin = c(2.5, 0), 
+                                        ymax = c(7, 2.3)),
+                     marker1 = "CD4", 
+                     marker2 = "CD8")
+ggsave(
+  filename = paste0(params$save_folder, "CD4_CD8_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+
+annotated_cells[["CD4 T"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["TCRab"]], 
+                                 c(annotated_cells[["DNT"]], 
+                                   annotated_cells[["DPT"]]))) %>%
+  subset(CD4 > 1.3 & CD8 < 2.5) %>%
+  colnames()
+
+annotated_cells[["CD8 T"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["TCRab"]], 
+                                 c(annotated_cells[["DNT"]], 
+                                   annotated_cells[["DPT"]]))) %>%
+  subset(CD4 < 1.3 & CD8 > 2.3) %>%
+  colnames()
+
+# Treg (CD25+, CD127lo, CD4+)
+
+
+pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD4 T"]])) %>%
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 1.7, 
+                                        xmax = 3.4,
+                                        ymin = 0,
+                                        ymax = 2.2),
+                     marker1 = "CD25", 
+                     marker2 = "CD127")
+
+ggsave(
+  filename = paste0(params$save_folder, "CD25_CD127_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["Treg"]] <-
+  pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD4 T"]])) %>%
+  subset(CD25 > 1.7 & CD127 < 2.2) %>%
+  colnames()
+
+# CD45RA+ T
+
+pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD4 T"]], 
+                   annotated_cells[["CD8 T"]])) %>%
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 2, 
+                                        xmax = 6,
+                                        ymin = 0,
+                                        ymax = 6),
+                     marker1 = "CD45RA", 
+                     marker2 = "CD27")
+ggsave(
+  filename = paste0(params$save_folder, "CD45RA_CD27_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["CD45RA+ T"]] <-
+  pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD4 T"]], 
+                   annotated_cells[["CD8 T"]])) %>% 
+  subset(CD45RA > 2) %>%
+  colnames()
+
+annotated_cells[["CD45RA- T"]] <-
+  pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD4 T"]], 
+                   annotated_cells[["CD8 T"]])) %>% 
+  subset(CD45RA < 2) %>%
+  colnames()
+
+# TCM and TEM (CD45RA-, CD127+/-)
+pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD45RA- T"]])) %>%
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 2, 
+                                        xmax = 4.5,
+                                        ymin = 1.9,
+                                        ymax = 5),
+                     marker1 = "CD127", 
+                     marker2 = "CD27")
+ggsave(
+  filename = paste0(params$save_folder, "CD127_CD27_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["TCM"]] <-
+  pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD45RA- T"]])) %>%
+  subset(CD127 > 2 & CD27 > 1.9) %>%
+  colnames()
+
+annotated_cells[["TEM"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["CD45RA- T"]],
+                         annotated_cells[["TCM"]])) %>%
+  colnames()
+
+
+
+# Naive and TSCM (CD127+/-)
+pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD45RA+ T"]])) %>%
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 1.7, 
+                                        xmax = 4.5,
+                                        ymin = 1.9,
+                                        ymax = 5.5),
+                     marker1 = "CD127", 
+                     marker2 = "CD27")
+ggsave(
+  filename = paste0(params$save_folder, "CD127_CD27_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+pg_data_annotated %>% 
+  subset(cells = c(annotated_cells[["CD45RA+ T"]])) %>%
+  subset(CD127 > 1.7 & CD27 > 1.9) %>%
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 1.6, 
+                                        xmax = 3,
+                                        ymin = 1.9,
+                                        ymax = 4),
+                     marker1 = "CD58", 
+                     marker2 = "CD11a")
+ggsave(
+  filename = paste0(params$save_folder, "CD58_CD11a_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+
+annotated_cells[["TSCM"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["CD45RA+ T"]]) %>%
+  subset(CD127 > 1.7 & CD27 > 1.9 & CD58 > 1.6 & CD11a > 1.9) %>%
+  colnames()
+
+annotated_cells[["Naive T"]] <-
+  pg_data_annotated %>% 
+  subset(cells = annotated_cells[["CD45RA+ T"]]) %>%
+  subset(CD127 > 1.7 & CD27 > 1.9 & (CD58 < 1.6 | CD11a < 1.9)) %>%
+  colnames()
+
+
+
+# TEFF and TEMRA (CD58+/-)
+
+
+pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["CD45RA+ T"]],
+                         c(annotated_cells[["TSCM"]],
+                           annotated_cells[["Naive T"]]))) %>%
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 2, 
+                                        xmax = 3,
+                                        ymin = 0,
+                                        ymax = 2),
+                     marker1 = "CD58", 
+                     marker2 = "CD95")
+ggsave(
+  filename = paste0(params$save_folder, "CD58_CD95_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+
+annotated_cells[["TEMRA"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["CD45RA+ T"]],
+                         c(annotated_cells[["TSCM"]],
+                           annotated_cells[["Naive T"]]))) %>%
+  subset(CD58 < 2) %>%
+  colnames()
+
+annotated_cells[["TEFF"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(annotated_cells[["CD45RA+ T"]],
+                         c(annotated_cells[["TSCM"]],
+                           annotated_cells[["Naive T"]]))) %>%
+  subset(CD58 > 2) %>%
+  colnames()
+
+
+# Annotate each group CD4 or CD8
+
+annotated_cells[["Naive CD4 T"]] <- 
+  intersect(annotated_cells[["Naive T"]], annotated_cells[["CD4 T"]])
+annotated_cells[["Naive CD8 T"]] <-
+  intersect(annotated_cells[["Naive T"]], annotated_cells[["CD8 T"]])
+annotated_cells[["CD4 TSCM"]] <- 
+  intersect(annotated_cells[["TSCM"]], annotated_cells[["CD4 T"]])
+annotated_cells[["CD8 TSCM"]] <-
+  intersect(annotated_cells[["TSCM"]], annotated_cells[["CD8 T"]])
+annotated_cells[["CD4 TCM"]] <-
+  intersect(annotated_cells[["TCM"]], annotated_cells[["CD4 T"]])
+annotated_cells[["CD8 TCM"]] <-
+  intersect(annotated_cells[["TCM"]], annotated_cells[["CD8 T"]])
+annotated_cells[["CD4 TEM"]] <-
+  intersect(annotated_cells[["TEM"]], annotated_cells[["CD4 T"]])
+annotated_cells[["CD8 TEM"]] <-
+  intersect(annotated_cells[["TEM"]], annotated_cells[["CD8 T"]])
+annotated_cells[["CD4 TEFF"]] <-
+  intersect(annotated_cells[["TEFF"]], annotated_cells[["CD4 T"]])
+annotated_cells[["CD8 TEFF"]] <-
+  intersect(annotated_cells[["TEFF"]], annotated_cells[["CD8 T"]])
+annotated_cells[["CD4 TEMRA"]] <-
+  intersect(annotated_cells[["TEMRA"]], annotated_cells[["CD4 T"]])
+annotated_cells[["CD8 TEMRA"]] <-
+  intersect(annotated_cells[["TEMRA"]], annotated_cells[["CD8 T"]])
+
+
+
+# 
+# T_anno_markers <-
+#   c("CD45RA",
+#     "CD45RO",
+#     "CD28",
+#     "CD95",
+#     "CD27",
+#     "CD127",
+#     "CD57",
+#     "CD11a",
+#     "CD58")
+# 
+# 
+# plot_anno <-
+#   pg_data_annotated %>% 
+#   subset(cells = c(annotated_cells[["CD4 T"]], 
+#                    annotated_cells[["CD8 T"]])) %>% 
+#   FetchData(c("seurat_clusters", T_anno_markers), layer = "data") %>% 
+#   as_tibble(rownames = "sample_component") %>% 
+#     mutate(cell_annotation = case_when(CD45RA > 1.9 ~ "Naive")) %>% 
+#     select(sample_component, seurat_clusters, cell_annotation) %>% 
+#     column_to_rownames("sample_component")
+# 
+# pg_data_annotated %>% 
+#   LayerData(layer = "data") %>% 
+#   {.[,c(annotated_cells[["CD4 T"]], 
+#         annotated_cells[["CD8 T"]])]} %>% 
+#   t() %>% 
+#   scale() %>% 
+#   t() %>% 
+#   {.[T_anno_markers,]} %>% 
+#   # {.[which(apply(., 1, function(x) sum(x) > 4) | rownames(.) %in% c("CD27")) ,]} %>% 
+#   ComplexHeatmap::pheatmap(breaks = seq(-3, 3, 0.1),
+#                            color = heatmap_gradient(100),
+#                            fontsize = 8,
+#                            cellwidth = 0.5,
+#                            cellheight = 8,
+#                            show_colnames = FALSE, 
+#                            clustering_method = "ward.D2", 
+#                            cutree_cols = 6,
+#                            annotation_col = plot_anno,
+#                            # cutree_cols = 4,
+#                            width = 8,
+#                            height = 10)
+# 
+# 
+
+  
+```
+
+#### Mono/DC
+
+```{r anno2_Mono, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+# Mono / DC
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     marker1 = "CD14", 
+                     marker2 = "HLA-DR")
+ggsave(
+  filename = paste0(params$save_folder, "CD14_HLA-DR_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+pg_data_annotated %>% 
+  LayerData(layer = "data") %>% 
+  t() %>% 
+  scale() %>% 
+  t() %>% 
+  {.[, setdiff(colnames(.), unlist(annotated_cells))]} %>% 
+  {.[which(apply(., 1, function(x) any(x > 2))),]} %>% 
+  ComplexHeatmap::pheatmap(breaks = seq(-3, 3, 0.1),
+                           color = heatmap_gradient(100),
+                           fontsize = 6,
+                           cellwidth = 2,
+                           cellheight = 6,
+                           clustering_method = "ward.D2", 
+                           cutree_cols = 4,
+                           width = 8,
+                           height = 10)
+  
+
+# CD14+, CD16- (Monocytes)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "quadrant",
+                     plot_gate = tibble(x = 0.7,
+                                        y = 0.8),
+                     marker1 = "CD14", 
+                     marker2 = "CD16")
+ggsave(
+  filename = paste0(params$save_folder, "CD14_CD16_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["Classical Mono"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD14 > 0.7 & CD16 < 0.8) %>%
+  colnames()
+
+annotated_cells[["Non-classical Mono"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD14 < 0.7 & CD16 > 0.8) %>%
+  colnames()
+
+annotated_cells[["Intermediate Mono"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD14 > 0.7 & CD16 > 0.8) %>%
+  colnames()
 
 
 
 
+# CD123+, cD11c (pDC)
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0, xmax = 1,
+                                        ymin = 4.5, ymax = 5.5),
+                     marker1 = "CD11c", 
+                     marker2 = "CD123")
+ggsave(
+  filename = paste0(params$save_folder, "CD11c_CD123_gate.pdf"),
+  width = 4,
+  height = 4
+)
 
-plot_embedding(pg_data_processed, "harmony",
+
+annotated_cells[["pDC"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD11c < 1 & CD123 > 4.5) %>%
+  colnames()
+
+
+# CD141+ (cDC1) 
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "quadrant",
+                     plot_gate = tibble(x = 1.2, 
+                                        y = -Inf),
+                     marker1 = "CD141", 
+                     marker2 = "CD1c")
+ggsave(
+  filename = paste0(params$save_folder, "CD141_CD1c_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+annotated_cells[["cDC1"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD141 > 1.2) %>%
+  colnames()
+
+# CD1c+ (cDC2)
+
+pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  DensityScatterPlot(layer = "data",
+                     margin_density = FALSE,
+                     gate_type = "rectangle",
+                     plot_gate = tibble(xmin = 0.6, xmax = 1.5,
+                                        ymin = 3, ymax = 4.5),
+                     marker1 = "CD1c", 
+                     marker2 = "CD11c")
+ggsave(
+  filename = paste0(params$save_folder, "CD1c_CD11c_gate.pdf"),
+  width = 4,
+  height = 4
+)
+
+
+pg_data_annotated %>% 
+  LayerData(layer = "data") %>% 
+  t() %>% 
+  scale() %>% 
+  t() %>% 
+  {.[, setdiff(colnames(.), unlist(annotated_cells))]} %>% 
+  {.[which(apply(., 1, function(x) any(x > 2))),]} %>% 
+  ComplexHeatmap::pheatmap(breaks = seq(-3, 3, 0.1),
+                           color = heatmap_gradient(100),
+                           fontsize = 6,
+                           cellwidth = 6,
+                           cellheight = 6,
+                           clustering_method = "ward.D2", 
+                           cutree_cols = 4,
+                           width = 8,
+                           height = 10)
+
+annotated_cells[["cDC2"]] <-
+  pg_data_annotated %>% 
+  subset(cells = setdiff(colnames(.), unlist(annotated_cells))) %>% 
+  subset(CD1c > 0.6 & CD11c > 3) %>%
+  colnames()
+  
+
+```
+
+
+#### Finish annotation
+
+```{r anno_fin, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+
+leaf_annotations <- 
+  as_tibble(annotation_hierarchy_graph) %>% 
+  filter(leaf)
+
+setdiff(as_tibble(annotation_hierarchy_graph)$name, names(annotated_cells))
+
+plot_data <- 
+  pg_data_resting %>% 
+  Embeddings("umap") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  left_join(annotated_cells %>% 
+              enframe("cell_annotation", "sample_component") %>% 
+              unnest(sample_component) %>% 
+              filter(cell_annotation %in% leaf_annotations$name), 
+            by = c("sample_component")) 
+
+missing_annotations <- 
+  plot_data %>% 
+  filter(is.na(cell_annotation)) %>% 
+  left_join(annotated_cells %>% 
+              enframe("cell_annotation", "sample_component") %>% 
+              unnest(sample_component), 
+            by = c("sample_component")) %>% 
+  pull(sample_component) %>%
+  unique() 
+  
+
+conflicting_annotations <- 
+  plot_data %>% 
+  group_by(sample_component) %>% 
+  filter(n() > 2) %>% 
+  print() %>% 
+  pull(sample_component) %>% 
+  unique() 
+
+cell_annotation <- 
+  plot_data %>% 
+  select(sample_component, cell_annotation) %>%
+  filter(!sample_component %in% c(missing_annotations, conflicting_annotations))
+
+```
+
+
+#### Plot
+
+```{r anno2_plot, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+
+
+
+plot_data %>% 
+  filter(is.na(cell_annotation)) %>% 
+  ggplot(aes(umap_1, umap_2, color = cell_annotation)) +
+  # geom_path() +
+  geom_point() +
+  geom_text(data = . %>% 
+              group_by(cell_annotation) %>%
+              summarise(umap_1 = median(umap_1),
+                        umap_2 = median(umap_2)),
+            aes(label = cell_annotation), 
+            color = "black",
+            size = 2, alpha = 0.5) +
+  coord_fixed() +
+  theme_bw()
+
+unique(plot_data$cell_annotation)[!unique(plot_data$cell_annotation) %in% names(pbmc_cell_type_palette)]
+
+plot_data %>% 
+  filter(!sample_component %in% c(missing_annotations, conflicting_annotations)) %>%
+  ggplot(aes(umap_1, umap_2, color = cell_annotation)) +
+  # geom_path() +
+  geom_point(size = 0.3) +
+  geom_text(data = . %>% 
+              group_by(cell_annotation) %>%
+              summarise(umap_1 = median(umap_1),
+                        umap_2 = median(umap_2)),
+            aes(label = cell_annotation), 
+            color = "black",
+            size = 2, alpha = 0.5) +
+  scale_color_manual(values = pbmc_cell_type_palette) +
+  coord_fixed() +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank()) +
+  labs(color = "Cell type",
+       x = "UMAP 1",
+       y = "UMAP 2") 
+
+ggsave(
+  filename = paste0(params$save_folder, "UMAP_annotated_cells.pdf"),
+  width = 8,
+  height = 8
+)
+
+plot_data_sum <- 
+  plot_data %>% 
+  filter(!sample_component %in% c(missing_annotations, conflicting_annotations)) %>% 
+  group_by(cell_annotation) %>% 
+  count() %>% 
+  ungroup() %>%
+  mutate(prc = n / sum(n) * 100,
+         prc_label = paste0(round(prc, 1), "%"),
+         cell_annotation = factor(cell_annotation, names(pbmc_cell_type_palette))) 
+
+plot_data_sum %>% 
+  ggplot(aes(1, prc, fill = cell_annotation)) +
+  
+  geom_segment(aes(x = 1, xend = 1.6,
+                   y = prc),
+               position = position_stack(vjust = 0.5)) +
+  geom_col() +
+  geom_text(aes(1.8, label = prc_label),
+            position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = pbmc_cell_type_palette) +
+  coord_polar(theta = "y") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        panel.border = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank()) +
+  labs(fill = "Cell type")
+ggsave(
+  filename = paste0(params$save_folder, "Pie_annotated_cells.pdf"),
+  width = 8,
+  height = 8
+)
+
+
+plot_data_sum %>% 
+  ggplot(aes(1, prc, fill = cell_annotation)) +
+  
+  geom_segment(aes(x = 1, xend = 1.55,
+                   y = prc),
+               position = position_stack(vjust = 0.5)) +
+  geom_col() +
+  geom_text(aes(1.7, label = paste(cell_annotation, prc_label, sep = "\n")),
+            hjust = 0,
+            position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = pbmc_cell_type_palette) +
+  coord_polar(theta = "y") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        panel.border = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank()) +
+  labs(fill = "Cell type")
+ggsave(
+  filename = paste0(params$save_folder, "Pie_annotated_cells2.pdf"),
+  width = 8,
+  height = 8
+)
+
+plot_data_sum %>% 
+  ggplot(aes(cell_annotation, prc, fill = cell_annotation)) +
+  
+  geom_col() +
+  geom_text(aes(label = prc_label),
+            vjust = 0) +
+  scale_fill_manual(values = pbmc_cell_type_palette) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(fill = "Cell type")
+ggsave(
+  filename = paste0(params$save_folder, "Flatpie_annotated_cells.pdf"),
+  width = 8,
+  height = 6
+)
+
+
+
+
+```
+
+### Dimred and clustering
+
+```{r data_processing, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+annotation_markers <-
+  c("CD10", "CD117", "CD11a", "CD11b", 
+    "CD11c", "CD123", "CD127", "CD138", "CD14", "CD141", "CD158", 
+    "CD159a", "CD159c", "CD16", "CD19", "CD1c", "CD20", "CD24", "CD25", 
+    "CD27", "CD28", "CD3e", "CD335", "CD337", "CD35", "CD38", 
+    "CD4", "CD8", "CD45RA", "CD45RO", "CD56", "CD57", "CD58", "CD66b", "CD95", 
+    "HLA-DR", "IgD", "TCRgd", "TCRva7.2", "TCRVd2", "TCRVg9", 
+    "CD41", "CD9", 
+    "TCRab", "CD45", "CD45RB", "CD2", "CD5", "CD26", "CD161", 
+    "CD21", "CD22", "CD33", "CD79a", "CD7", "IgE", "IgM", "NKp80")
+
+
+pg_data_annotated <- 
+  pg_data_annotated %>%
+  subset(cells = cell_annotation$sample_component) %>% 
+  AddMetaData(cell_annotation %>% 
+              deframe(), 
+            col.name = "cell_annotation") %>%
+  NormalizeData(normalization.method = norm_method, margin = 2) %>%
+  FindVariableFeatures(nfeatures = 75) %>%
+  ScaleData() 
+
+VariableFeatures(pg_data_annotated)[!VariableFeatures(pg_data_annotated) %in% annotation_markers] 
+rownames(pg_data_annotated)[!rownames(pg_data_annotated) %in% annotation_markers] %>% sort()
+
+pg_data_annotated <- 
+  pg_data_annotated %>% 
+  RunPCA(features = unique(c(annotation_markers)), layer = "data") %>%
+  RunUMAP(reduction = "pca", dims = 1:10, n.neighbors = 15, seed.use = 37) 
+
+Reductions(pg_data_annotated, "pca")@stdev %>% 
+  enframe("PC", "sd") %>% 
+  ggplot(aes(PC, sd)) +
+  geom_line() +
+  geom_point()
+  
+pg_data_annotated <- 
+  pg_data_annotated %>% 
+  FindNeighbors(reduction = "pca", dims = 1:10, k.param = 15) %>% 
+  FindClusters(random.seed = 37, resolution = 3)
+
+plot_embedding(pg_data_annotated, "umap",
                  metavars = "seurat_clusters",
                  # pal = cell_palette,
                  plot_title = "Clusters")
-plot_embedding(pg_data_processed, "harmony",
+plot_embedding(pg_data_annotated, "umap",
+                 metavars = "cell_annotation",
+                 # pal = cell_palette,      
+                 plot_title = "Clusters") +
+  
+  scale_color_manual(values = pbmc_cell_type_palette) 
+
+
+plot_embedding(pg_data_annotated, "umap",
                  metavars = "sample_alias",
                  # pal = cell_palette,
                  plot_title = "samples")
 
-plot_embedding(pg_data_processed, "pca",
-                 metavars = "seurat_clusters",
-                 # pal = cell_palette,
-                 plot_title = "Clusters")
-plot_embedding(pg_data_processed, "pca",
-                 metavars = "sample_alias",
-                 # pal = cell_palette,
-                 plot_title = "samples")
-
-FeaturePlot(pg_data_processed, 
-             features = c(control_markers, "isotype_fraction"),
-             reduction = "harmony",
-             ncol = 3,
-             pt.size = 0.1) 
-
-VlnPlot(pg_data_processed, 
-         features = c(control_markers, "isotype_fraction"),
-         group.by = "condition")
+plot_data <- 
+  pg_data_annotated %>% 
+  Embeddings("umap") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  left_join(FetchData(pg_data_annotated, c("seurat_clusters", "cell_annotation")) %>% 
+              as_tibble(rownames = "sample_component"), 
+            by = c("sample_component")) 
 
 
-pg_data_processed_pca <- 
-  Reductions(pg_data_processed, "pca")
+plot_data %>% 
+  ggplot(aes(umap_1, umap_2, color = cell_annotation)) +
+  # geom_path() +
+  geom_point(size = 0.3) +
+  geom_text(data = . %>% 
+              group_by(cell_annotation) %>%
+              summarise(umap_1 = median(umap_1),
+                        umap_2 = median(umap_2)),
+            aes(label = cell_annotation), 
+            color = "black",
+            size = 2, alpha = 0.5) +
+  scale_color_manual(values = pbmc_cell_type_palette) +
+  coord_fixed() +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(color = "Cell type",
+       x = "UMAP 1",
+       y = "UMAP 2") 
 
-pg_data_processed_pca@feature.loadings %>% 
-  as_tibble(rownames = "marker") %>%
-  arrange(-abs(PC_1)) %>% 
-  print(n = 30)
-
-```
-
-
-### PCA
-
-```{r dimred_pca, fig.width = 10, fig.height = 7, message=FALSE, warning=FALSE, echo = FALSE}
-p1 <- 
-  plot_embedding(pg_data_processed, "pca",
-                 metavars = "seurat_clusters",
-                 # pal = cell_palette,
-                 plot_title = "Clusters")
-
-p2 <- 
-  plot_embedding(pg_data_processed, "pca", 
-                 metavars = "sample_alias", 
-                 # pal = sample_palette, 
-                 plot_title = "Samples", 
-                 label = FALSE, 
-                 legend_position = "bottom")
-p3 <- 
-  plot_embedding(pg_data_processed, "pca", 
-                 metavars = "condition", 
-                 # pal = sample_palette, 
-                 plot_title = "Conditions", 
-                 label = FALSE, 
-                 legend_position = "bottom")
-
-p1 | p2 | p3
 ggsave(
-  filename = paste0(params$save_folder, "pca_plot.pdf"),
-  width = 10,
-  height = 7
-)
-```
-
-
-```{r dimred_pca_harmony, fig.width = 10, fig.height = 5, message=FALSE, warning=FALSE, echo = FALSE}
-
-
-p1 <- 
-  plot_embedding(pg_data_processed, "harmony",
-                 metavars = "seurat_clusters",
-                 # pal = cell_palette,
-                 plot_title = "Clusters")
-p2 <- 
-  plot_embedding(pg_data_processed, "harmony", 
-                 metavars = "sample_alias", 
-                 # pal = sample_palette, 
-                 plot_title = "Samples", 
-                 label = FALSE, 
-                 legend_position = "bottom")
-p3 <- 
-  plot_embedding(pg_data_processed, "harmony", 
-                 metavars = "condition", 
-                 # pal = sample_palette, 
-                 plot_title = "Conditions", 
-                 label = FALSE, 
-                 legend_position = "bottom")
-
-p <- p1 | p2 | p3
-print(p)
-ggsave(
-  filename = paste0(params$save_folder, "harmony_pca_plot.pdf"),
-  plot = p,
-  width = 10,
+  filename = paste0(params$save_folder, "UMAP_annotated_cells_refined.pdf"),
+  width = 6,
   height = 5
 )
 
-```
 
-
-
-### UMAP
-
-```{r dimred_umap, fig.width = 10, fig.height = 7, message=FALSE, warning=FALSE, echo = FALSE}
-p1 <- 
-  plot_embedding(pg_data_processed, "umap",
-                 metavars = "seurat_clusters",
-                 # pal = cell_palette,
-                 plot_title = "Clusters")
-p2 <- 
-  plot_embedding(pg_data_processed, "umap", 
-                 metavars = "sample_alias", 
-                 # pal = sample_palette, 
-                 plot_title = "Samples", 
-                 label = FALSE, 
-                 legend_position = "bottom")
-p3 <- 
-  plot_embedding(pg_data_processed, "umap", 
-                 metavars = "condition", 
-                 # pal = sample_palette, 
-                 plot_title = "Conditions", 
-                 label = FALSE, 
-                 legend_position = "bottom")
-
-p1 | p2 | p3
+FetchData(pg_data_annotated, c("cell_annotation", annotation_markers), 
+          layer = "data") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  pivot_longer(cols = -c(sample_component, cell_annotation), names_to = "marker", values_to = "value") %>%
+  group_by(cluster = cell_annotation, marker) %>%
+  summarise(mean = mean(value)) %>% 
+  pivot_wider(names_from = marker, values_from = mean) %>%
+  column_to_rownames("cluster") %>%
+  sweep(2, apply(., 2, max), "/") %>%
+  ComplexHeatmap::pheatmap(
+    fontsize = 8,
+    cellwidth = 8,
+    cellheight = 8,
+    clustering_method = "ward.D2",
+    color = cherry_gradient(100),
+    width = 8,
+    height = 10
+  ) %>% 
+  as.ggplot()
 ggsave(
-  filename = paste0(params$save_folder, "umap_plot.pdf"),
-  width = 10,
-  height = 7
+  filename = paste0(params$save_folder, "Heatmap_annotated_cells.pdf"),
+  width = 8,
+  height = 10
 )
 
 ```
-
-
-
-```{r dimred_umap_harmony, fig.width = 10, fig.height = 5, message=FALSE, warning=FALSE, echo = FALSE}
-
-p1 <- 
-  plot_embedding(pg_data_processed, "harmony_umap",
-                 metavars = "seurat_clusters",
-                 # pal = cell_palette,
-                 plot_title = "Clusters")
-p2 <- 
-  plot_embedding(pg_data_processed, "harmony_umap", 
-                 metavars = "sample_alias", 
-                 # pal = sample_palette, 
-                 plot_title = "Samples", 
-                 label = FALSE, 
-                 legend_position = "bottom")
-p3 <- 
-  plot_embedding(pg_data_processed, "harmony_umap", 
-                 metavars = "condition", 
-                 # pal = sample_palette, 
-                 plot_title = "Conditions", 
-                 label = FALSE, 
-                 legend_position = "bottom")
-
-p <- p1 | p2 | p3
-print(p)
-ggsave(
-  filename = paste0(params$save_folder, "harmony_umap_plot.pdf"),
-  plot = p,
-  width = 10,
-  height = 5
-)
-
-```
-
-

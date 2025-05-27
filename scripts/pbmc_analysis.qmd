@@ -34,6 +34,8 @@ library(harmony)
 library(tidyverse)
 library(ggplotify)
 library(tidygraph)
+library(pcaMethods)
+library(pbapply)
 source("theme.R")
 source("utility.R")
 ```
@@ -937,6 +939,46 @@ FetchData(pg_data_resting, c("seurat_clusters", annotation_markers),
     height = 10
   )
 ```
+
+### Doublet detection
+
+```{r doublet_detection, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+predicted_doublets <- 
+  PredictDoublets(pg_data_resting, npcs = 10, simulation_rate = 3, n_neighbor = 100)
+
+Embeddings(pg_data_resting, "umap") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  left_join(predicted_doublets %>% 
+              as_tibble(rownames = "sample_component")) %>% 
+  arrange(desc(doublet_prediction)) %>% 
+  ggplot(aes(umap_1, umap_2)) +
+  geom_point(aes(color = doublet_prediction), size = 2) +
+  scale_color_manual(values = rev(yes_no_palette)) +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  labs(title = "Doublet prediction")
+
+
+Embeddings(pg_data_resting, "umap") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  left_join(predicted_doublets %>% 
+              as_tibble(rownames = "sample_component")) %>% 
+  arrange(desc(doublet_prediction)) %>% 
+  ggplot(aes(umap_1, umap_2)) +
+  geom_point(aes(color = -log10(doublet_p) ), size = 2) +
+  scale_color_gradientn(colors = cherry_gradient(100),
+                     name = "Doublet prediction") +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  labs(title = "Doublet prediction")
+
+
+
+
+```
+
+
 
 ### Gate annotation
 
@@ -2254,7 +2296,6 @@ ggsave(
   height = 5
 )
 
-
 FetchData(pg_data_annotated, c("cell_annotation", annotation_markers), 
           layer = "data") %>% 
   as_tibble(rownames = "sample_component") %>% 
@@ -2279,5 +2320,970 @@ ggsave(
   width = 8,
   height = 10
 )
+
+```
+
+### Abundance plots 
+
+
+```{r anno_ab_plots, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+plot_data <- 
+  FetchData(pg_data_annotated, c("cell_annotation", c("CD4", "CD8", "CD14", "CD20")), 
+            layer = "data") %>% 
+  as_tibble(rownames = "sample_component") %>%
+  pivot_longer(cols = -c(sample_component, cell_annotation), names_to = "marker", values_to = "value") %>%
+  mutate(cell_annotation = 
+           factor(cell_annotation, 
+                  levels = names(pbmc_cell_type_palette))) 
+
+plot_data %>%
+  ggplot(aes(x = cell_annotation, y = value, fill = cell_annotation)) +
+  geom_boxplot(outliers = FALSE, linewidth = 0.1) +
+  geom_jitter(size = 0.1,
+              alpha = 0.5) +
+  facet_grid(marker ~ ., scales = "free_y") +
+  scale_fill_manual(values = pbmc_cell_type_palette) +
+  scale_color_manual(values = pbmc_cell_type_palette) +
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 60, hjust = 1),
+        legend.position = "none") +
+  labs(x = "Cell type",
+       y = "Abundance",
+       fill = "Cell type",
+       color = "Cell type")
+ggsave(
+  filename = paste0(params$save_folder, "Ab_violins_annotated_cells.pdf"),
+  width = 7,
+  height = 6
+)
+
+
+FetchData(pg_data_annotated, c("cell_annotation", annotation_markers), 
+            layer = "data") %>% 
+  as_tibble(rownames = "sample_component") %>%
+  pivot_longer(cols = -c(sample_component, cell_annotation), names_to = "marker", values_to = "value") %>%
+  group_by(cell_annotation, marker) %>%
+  summarise(mean = mean(value)) %>%
+  pivot_wider(names_from = marker, values_from = mean) %>%
+  column_to_rownames("cell_annotation") %>%
+  sweep(2, apply(., 2, max), "/") %>%
+  ComplexHeatmap::pheatmap(
+    fontsize = 8,
+    cellwidth = 8,
+    cellheight = 8,
+    clustering_method = "ward.D2",
+    # color = cherry_gradient(5),
+    color = c("gray99", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534"),
+    # color = c("white", "#F7BFC4", "#EF9DA2", "#E67C81", "#DB5D61", "#CE4042", "#A53335", "#7C2628"),
+    heatmap_legend_param = list(title = "CLR scaled\nto max"),
+    width = 8,
+    height = 10
+  ) %>%
+  as.ggplot() 
+ggsave(
+  filename = paste0(params$save_folder, "Heatmap_annotated_cells2.pdf"),
+  width = 10,
+  height = 10
+)
+
+# structure(list(purples = c("#DED8F4", "#BFB3E9", "#A28EDB", "#866CCD", 
+# "#6C4ABD", "#5A3E9E", "#48327F"), blues = c("#B9CDED", "#92B0E0", 
+# "#6D92D1", "#4A73C0", "#2955AE", "#224792", "#1C3A76"), cyans = c("#D0EDE6", 
+# "#A2DACE", "#75C5B5", "#4AAF9D", "#209785", "#1B7E6F", "#156559"
+# ), greens = c("#D7EBD3", "#AFD6A9", "#86C080", "#5EA857", "#369030", 
+# "#2D7828", "#246120"), pinks = c("#F4DAEC", "#E7B7D7", "#DA94C1", 
+# "#CB73A9", "#BB5391", "#9C4579", "#7D3861"), 
+# reds = c("#F7BFC4", "#EF9DA2", "#E67C81", "#DB5D61", "#CE4042", "#A53335", "#7C2628"), 
+# oranges = c("#F6DBD4", "#EBB9AA", "#DE9982", "#D07B5B", "#C05F36", "#A04F2D", "#814024"),
+# yellows = c("#FCE6B4", "#F7D78C", "#F0C966", "#E6BB43", "#DAAC22", "#AE8A1B", "#836714")), 
+
+
+```
+
+### Find cell:cell aggregates 
+
+
+```{r}
+
+
+plot_data %>% 
+  filter(doublet_p_adj < 0.001) %>% 
+  pull(1) %>% 
+  unique() -> apa
+
+targeted_doublets %>% filter(doublet_p_adj < 0.001) %>% 
+  select(sample_component, group_name, doublet_p_adj) %>%
+  mutate(doublet_p_adj = -log10(doublet_p_adj)) %>% 
+  
+  pivot_wider(names_from = group_name, values_from = doublet_p_adj, values_fill = 0) %>% 
+  column_to_rownames("sample_component") %>%
+  ComplexHeatmap::pheatmap(color = cherry_gradient(100),
+                           fontsize = 6,
+                           cellwidth = 6,
+                           cellheight = 6,
+                           clustering_method = "ward.D2", 
+                           cutree_cols = 4,
+                           width = 8,
+                           height = 10)
+
+predicted_doublets %>% 
+  filter(doublet_p_adj < 0.01) %>%
+  rownames-> bepa
+
+pg_data_annotated %>%
+  LayerData(layer = "counts") %>% 
+  log1p %>% 
+  t() %>% 
+  scale() %>% 
+  t() %>% 
+  # {.[,apa]} %>%
+  {.[,bepa]} %>%
+  as.matrix() %>% 
+  {.[which(apply(., 1, function(x) sd(x) > 1)),]} %>%
+  ComplexHeatmap::pheatmap(breaks = seq(-3, 3, 0.1),
+                           color = heatmap_gradient(100),
+                           fontsize = 6,
+                           cellwidth = 6,
+                           cellheight = 6,
+                           clustering_method = "ward.D2", 
+                           annotation_col = FetchData(pg_data_annotated, c("tau"))[bepa, ,drop = FALSE],
+                           cutree_cols = 4,
+                           width = 8,
+                           height = 10)
+
+
+pixelatorR::Loa
+
+apy <- 
+  pg_data_annotated %>% 
+  subset(cells = bepa) %>% 
+  LoadCellGraphs() %>% 
+  ComputeLayout(layout_method = "wpmds")
+
+
+CellGraphs(apy)[[1]]-> aaa
+apy %>% 
+  CellGraphs() %>% 
+  pixelatorRinternal::gridPlot3D(components = names(.)[9:14],
+                                 layout = "wpmds_3d",
+                                 markers = c("CD3e", "CD20", "CD33", "CD56", "CD41"), 
+                                 color_mode = "count",
+                                 color_range = c(0, 1),
+                                 plot_colors = c("gray", "orangered"),
+                                 point_size = 1,
+                                 windowRect = c(50, 50, 2600, 1400),
+                                 )
+
+Reductions(pg_data_annotated, "pca") -> aaa
+
+aaa@feature.loadings[, 1:10] %>% 
+  as_tibble(rownames = "marker") %>% 
+  # arrange(-abs(PC_6))
+  pivot_longer(cols = -marker, names_to = "PC", values_to = "value") %>% 
+  group_by(PC) %>% 
+  top_n(10, abs(value)) %>% 
+  pull(marker) %>% 
+  unique()
+
+ProximityScores(pg_data_annotated) %>% 
+  filter(component == bepa[7]) %>% 
+  filter(marker_1 %in% identity_markers & 
+         marker_2 %in% identity_markers) %>%
+  # filter(marker_1 != marker_2) %>% 
+  arrange(log2_ratio) %>% 
+  select(marker_1, marker_2, log2_ratio) %>%
+  bind_rows(
+    select(., marker_1 = marker_2, 
+           marker_2 = marker_1, 
+           log2_ratio) 
+  ) %>%
+  distinct() %>% 
+  pivot_wider(names_from = marker_1, values_from = log2_ratio, values_fill = 0) %>%
+  column_to_rownames("marker_2") %>%
+  ComplexHeatmap::pheatmap(breaks = seq(-3, 3, 0.1),
+                           color = heatmap_gradient(100),
+                           fontsize = 6,
+                           cellwidth = 6,
+                           cellheight = 6,
+                           clustering_method = "ward.D2", 
+                           width = 8,
+                           height = 10)
+
+#############################
+
+
+Reductions(pg_data_annotated, "pca") -> aaa
+abo <- 
+  aaa@feature.loadings[, 1:10] %>% 
+  as_tibble(rownames = "marker") %>% 
+  # arrange(-abs(PC_6))
+  pivot_longer(cols = -marker, names_to = "PC", values_to = "value") %>% 
+  group_by(PC) %>% 
+  top_n(10, abs(value)) %>% 
+  ungroup()
+
+apaan <- 
+  ProximityScores(pg_data_annotated) %>% 
+  # filter(component == bepa[7]) %>%
+  filter(marker_1 == marker_2) %>% 
+  select(component, marker = marker_1, join_count, log2_ratio) %>% 
+  inner_join(abo,
+             by = c("marker")) %>% 
+  # inner_join(abo,
+  #            by = c("marker_2" = "marker"),
+  #            suffix = c("1", "2")) %>% 
+  group_by(component, PC) %>%
+  summarise(log2_ratio = mean(log2_ratio),
+            log2_ratio_w = mean(log2_ratio * abs(value)),
+            join_count = mean(join_count),
+            join_count_w = mean(join_count * abs(value))) %>% 
+  arrange(-log2_ratio_w)
+
+
+apaan %>% 
+  left_join(predicted_doublets %>% 
+              as_tibble(rownames = "component"), 
+            by = c("component")) %>%
+  ggplot(aes(PC, log2_ratio, fill = doublet_prediction)) +
+  geom_violin(draw_quantiles = 0.5, scale = "width") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) 
+
+library(RcppML)
+set.seed(37)
+pg_data_annotated_nmf <- 
+  pg_data_annotated %>% 
+  LayerData(layer = "counts") %>%
+  log1p() %>% 
+  sweep(2, apply(., 2, max), "/") %>%
+  nmf(k = 20)
+
+
+pg_data_annotated_nmf$h %>% 
+  t() %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  ggplot(aes(V1, V2)) +
+  geom_point()
+var_w <- 
+  pg_data_annotated_nmf$w %>% 
+  as_tibble() %>% 
+  mutate(marker = rownames(pg_data_annotated)) %>% 
+  pivot_longer(cols = -marker, names_to = "factor", values_to = "value")
+
+var_imp_filtr <- 0.02
+var_w %>% 
+    filter(value > var_imp_filtr) %>% 
+  group_by(factor) %>%
+  summarise(n = n(), 
+            mrkrs = paste(sort(marker), collapse = ";"))
+
+plot_data <- 
+  var_w$factor %>% 
+  unique() %>% 
+  set_names() %>% 
+  pblapply(function(factr) {
+    ProximityScores(pg_data_annotated) %>% 
+      # filter(component == bepa[7]) %>%
+      # filter(marker_1 == marker_2) %>% 
+      
+      select(component, marker_1, marker_2, join_count, log2_ratio,
+             join_count_expected_mean) %>% 
+      inner_join(var_w %>% 
+                  filter(value > var_imp_filtr) %>% 
+                  filter(factor == factr) %>% 
+                  select(-factor),
+                by = c("marker_1" = "marker")) %>% 
+      inner_join(var_w %>% 
+                   filter(value > var_imp_filtr) %>% 
+                   filter(factor == factr) %>% 
+                   select(-factor),
+                 by = c("marker_2" = "marker"),
+                 suffix = c("_1", "_2")) %>% 
+      mutate(join_count = join_count * sqrt(value_1 * value_2),
+             join_count_expected_mean = join_count_expected_mean * sqrt(value_1 * value_2)) %>% 
+      group_by(component) %>%
+      summarise(join_count = sum(join_count),
+                join_count_expected_mean = sum(join_count_expected_mean),
+                join_count = ifelse(join_count < 1, 1, join_count),
+                join_count_expected_mean = ifelse(join_count_expected_mean < 1, 1, join_count_expected_mean),
+                log2_ratio = log2(join_count / join_count_expected_mean))
+  }) %>% 
+  bind_rows(.id = "factor")
+
+
+ 
+
+plot_data %>% 
+  left_join(predicted_doublets %>% 
+              as_tibble(rownames = "component"), 
+            by = c("component")) %>%
+  ggplot(aes(factor, log2_ratio, fill = doublet_prediction)) +
+  geom_violin(draw_quantiles = 0.5, scale = "width") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) 
+
+plot_data %>% 
+  select(factor, log2_ratio, component) %>%
+  pivot_wider(names_from = factor, values_from = log2_ratio) %>%
+  ggplot(aes(V1, V6)) +
+  geom_point()
+
+plot_data %>% 
+  select(factor, log2_ratio, component) %>%
+  pivot_wider(names_from = factor, values_from = log2_ratio) %>%
+  column_to_rownames("component") %>%
+  t() %>% 
+  ComplexHeatmap::pheatmap(breaks = seq(-0.4, 0.4, length.out = 100),
+                           color = heatmap_gradient(100),
+                           fontsize = 6,
+                           # cellwidth = 2,
+                           cellheight = 6,
+                           show_colnames = FALSE,
+                           clustering_method = "ward.D2", 
+                           annotation_col = FetchData(pg_data_annotated, c("tau", "n_umi")) %>% 
+                             as_tibble(rownames = "sample_component") %>% 
+                             left_join(predicted_doublets %>% 
+                                         as_tibble(rownames = "sample_component") %>% 
+                                         select(1, doublet_p_adj) %>% 
+                                         mutate(doublet_p_adj = -log10(doublet_p_adj))) %>% 
+                             mutate(n_umi = log10(n_umi)) %>% 
+                             column_to_rownames("sample_component"),
+                           annotation_colors = list(tau = c("gray", "orangered"),
+                                                    n_umi = c("gray", "orangered"),
+                                                    doublet_p_adj = c("gray", "orangered")),
+                           # cutree_cols = 4,
+                           width = 8,
+                           height = 10)
+  
+```
+
+##Stimulated vs Resting
+
+### Gate some cell types
+
+```{r stim_rest, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+pg_data_processed <- 
+  pg_data_processed %>% 
+  NormalizeData(normalization.method = norm_method, margin = 2) 
+
+DensityScatterPlot(pg_data_processed, 
+                   layer = "data",
+                   margin_density = FALSE,
+                   gate_type = "rectangle",
+                   facet_vars = "condition",
+                   plot_gate = tibble(xmin = 3.2, xmax = 6.6,
+                                      ymin = 3, ymax = 6),
+                   marker1 = "CD45", 
+                   marker2 = "CD3e")
+ggsave(
+  filename = paste0(params$save_folder, "Stim_CD3e_CD45_gate.pdf"),
+  width = 4,
+  height = 6
+)
+
+DensityScatterPlot(pg_data_processed, 
+                   layer = "data",
+                   margin_density = FALSE,
+                   gate_type = "rectangle",
+                   facet_vars = "condition",
+                   plot_gate = tibble(xmin = 3.2, xmax = 6,
+                                      ymin = 1.7, ymax = 4.6),
+                   marker1 = "CD3e", 
+                   marker2 = "CD4")
+
+ggsave(
+  filename = paste0(params$save_folder, "Stim_CD4_CD3e_gate.pdf"),
+  width = 4,
+  height = 6
+)
+
+DensityScatterPlot(pg_data_processed, 
+                   layer = "data",
+                   margin_density = FALSE,
+                   gate_type = "rectangle",
+                   facet_vars = "condition",
+                   plot_gate = tibble(xmin = 3.2, xmax = 6,
+                                      ymin = 3.5, ymax = 6.5),
+                   marker1 = "CD3e", 
+                   marker2 = "CD8")
+
+ggsave(
+  filename = paste0(params$save_folder, "Stim_CD8_CD3e_gate.pdf"),
+  width = 4,
+  height = 6
+)
+
+DensityScatterPlot(pg_data_processed, 
+                   layer = "data",
+                   margin_density = FALSE,
+                   gate_type = "rectangle",
+                   facet_vars = "condition",
+                   plot_gate = tibble(xmin = 3, xmax = 6,
+                                      ymin = c(3.1, 1.6), ymax = c(5.7, 4.5),
+                                      condition = c("PHA PBMCs",
+                                                    "Resting PBMCs")),
+                   marker1 = "CD45", 
+                   marker2 = "CD20")
+
+ggsave(
+  filename = paste0(params$save_folder, "Stim_CD20_CD45_gate.pdf"),
+  width = 4,
+  height = 6
+)
+
+stim_annotated_cells <- 
+  list()
+
+stim_annotated_cells[["CD4 T cells"]] <-
+  pg_data_processed %>% 
+  subset(CD3e > 3.2 & CD4 > 1.7) %>%
+  colnames()
+
+stim_annotated_cells[["CD8 T cells"]] <-
+  pg_data_processed %>% 
+  subset(CD3e > 3.2 & CD8 > 3.5) %>%
+  colnames()  
+
+stim_annotated_cells[["B cells"]] <-
+  pg_data_processed %>% 
+  subset((condition == "PHA PBMCs" & 
+            CD20 > 3.1 & CD45 > 3) |
+           (condition == "Resting PBMCs" &
+              CD20 > 1.6 & CD45 > 3)) %>%
+  colnames()
+
+stim_annotated_cells <- 
+  stim_annotated_cells %>% 
+  enframe("cell_annotation", "sample_component") %>% 
+  unnest(sample_component) %>% 
+  group_by(sample_component) %>% 
+  filter(n() == 1) %>% 
+  ungroup() %>% 
+  select(sample_component, cell_annotation) 
+
+pg_data_processed <- 
+  pg_data_processed %>% 
+  AddMetaData(
+    stim_annotated_cells %>% 
+      deframe(), 
+    col.name = "stim_cell_annotation") 
+
+
+```
+
+### Differential abundance
+
+```{r stim_DA, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+
+DefaultAssay(pg_data_processed) <- "PNA"
+condition_DAA <- 
+  stim_annotated_cells$cell_annotation %>% 
+  unique() %>%
+  set_names(., .) %>% 
+  lapply(function(celltyp) {
+    
+    
+    pg_data_processed %>% 
+      SetIdent(value = "stim_cell_annotation") %>%
+      
+      FindMarkers(ident.1 = "PHA PBMCs",
+                  ident.2 = "Resting PBMCs",
+                  group.by = "condition",
+                  subset.ident = celltyp, 
+                  logfc.threshold = 0, 
+                  min.pct = 0, 
+                  mean.fxn = rowMeans,
+                  slot = "data",
+                  return.thresh = 1,
+                  fc.name = "difference") %>% 
+      as_tibble(rownames = "marker")
+    
+  }) %>% 
+  bind_rows(.id = "celltype") 
+
+condition_DAA %>% 
+  
+  ggplot(aes(difference, -log10(p_val_adj))) +
+  geom_point() +
+  geom_text(data = . %>% 
+              filter(abs(difference) > 1),
+            aes(label = marker)) +
+  facet_wrap(~ celltype, scales = "free_y") +
+  theme_bw()
+
+ggsave(
+  filename = paste0(params$save_folder, "Diff_annotated_cells.pdf"),
+  width = 8,
+  height = 10
+)  
+condition_DAA %>% 
+  group_by(marker) %>% 
+  filter(any(abs(difference) > 1)) %>%
+  # filter(any(p_val_adj < 1e-5)) %>% 
+  select(celltype, marker, difference) %>% 
+  pivot_wider(names_from = marker, values_from = difference, values_fill = 0) %>%
+  column_to_rownames("celltype") %>%
+  ComplexHeatmap::pheatmap(breaks = seq(-3, 3, 0.1),
+                           color = heatmap_gradient(100),
+                           fontsize = 6,
+                           cellwidth = 6,
+                           cellheight = 6,
+                           clustering_method = "ward.D2", 
+                           heatmap_legend_param = list(title = "CLR Difference"),
+                           width = 8,
+                           height = 10) %>% 
+  as.ggplot()
+ggsave(
+  filename = paste0(params$save_folder, "Diff_annotated_cells_heatmap.pdf"),
+  width = 8,
+  height = 10
+)
+
+plot_data <- 
+  condition_DAA %>% 
+  select(marker, difference, celltype) %>% 
+  pivot_wider(names_from = marker, values_from = difference, values_fill = 0) %>% 
+  group_by(celltype) 
+
+```
+
+### Differential proximity
+
+
+
+```{r stim_DP, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+background_threshold <- median(pg_data_processed$isotype_fraction) + 2 * mad(pg_data_processed$isotype_fraction)
+
+
+DefaultAssay(pg_data_processed) <- "PNA"
+proximity_wide <-
+  pg_data_processed %>% 
+  ProximityScores(add_marker_counts = TRUE, add_marker_proportions = TRUE) %>% 
+  pixelatorRinternal::FilterProximityScores(background_threshold_pct = background_threshold) %>% 
+  ProximityScoresToAssay(values_from = "log2_ratio", missing_obs = 0)
+
+# Create a proximity assay
+proximity_wide <- proximity_wide[, colnames(pg_data_processed)]
+proximity_assay <- CreateAssay5Object(data = proximity_wide)
+pg_data_processed[["proximity"]] <- proximity_assay
+
+proximity_jc_wide <-
+  pg_data_processed %>% 
+  ProximityScores(add_marker_counts = TRUE, add_marker_proportions = TRUE) %>% 
+  pixelatorRinternal::FilterProximityScores(background_threshold_pct = background_threshold) %>% 
+  ProximityScoresToAssay(values_from = "join_count", missing_obs = 0)
+
+# Create a proximity assay
+proximity_jc_wide <- proximity_jc_wide[, colnames(pg_data_processed)]
+proximity_jc_assay <- CreateAssay5Object(counts = proximity_jc_wide)
+pg_data_processed[["proximity_jc"]] <- proximity_jc_assay
+
+
+DefaultAssay(pg_data_processed) <- "proximity"
+
+
+condition_DPA <-
+  stim_annotated_cells$cell_annotation %>%
+  unique() %>%
+  set_names(., .) %>%
+  lapply(function(celltyp) {
+
+
+    pg_data_processed %>%
+      SetIdent(value = "stim_cell_annotation") %>%
+
+      FindMarkers(ident.1 = "PHA PBMCs",
+                  ident.2 = "Resting PBMCs",
+                  group.by = "condition",
+                  subset.ident = celltyp,
+                  logfc.threshold = 0,
+                  min.pct = 0,
+                  mean.fxn = rowMeans,
+                  slot = "data",
+                  return.thresh = 1,
+                  fc.name = "difference") %>%
+      as_tibble(rownames = "marker")
+
+  }) %>%
+  bind_rows(.id = "celltype")
+
+condition_DPA %>%
+
+  ggplot(aes(difference, -log10(p_val_adj))) +
+  geom_point() +
+  geom_text(data = . %>%
+              filter(abs(difference) > 1),
+            aes(label = marker)) +
+  facet_wrap(~ celltype, scales = "free_y") +
+  theme_bw()
+
+ggsave(
+  filename = paste0(params$save_folder, "Prox_Diff_annotated_cells.pdf"),
+  width = 8,
+  height = 10
+)
+condition_DPA %>%
+  group_by(marker) %>%
+  filter(any(abs(difference) > 1)) %>%
+  select(celltype, marker, difference) %>%
+  pivot_wider(names_from = marker, values_from = difference, values_fill = 0) %>%
+  column_to_rownames("celltype") %>%
+  ComplexHeatmap::pheatmap(breaks = seq(-3, 3, 0.1),
+                           color = heatmap_gradient(100),
+                           fontsize = 6,
+                           cellwidth = 6,
+                           cellheight = 6,
+                           clustering_method = "ward.D2",
+                           heatmap_legend_param = list(title = "PS Difference"),
+                           width = 8,
+                           height = 10) %>%
+  as.ggplot()
+ggsave(
+  filename = paste0(params$save_folder, "Prox_Diff_annotated_cells_heatmap.pdf"),
+  width = 8,
+  height = 10
+)
+
+condition_DPA %>% 
+  filter(celltype == "CD4 T cells") %>% 
+  select(marker, difference) %>%
+  separate(marker, into = c("marker_1", "marker_2"), sep = "/") %>%
+  bind_rows(
+    select(., marker_1 = marker_2, 
+           marker_2 = marker_1, 
+           difference) 
+  ) %>%
+  distinct() %>%
+  group_by(marker_1) %>% 
+  filter(any(abs(difference) > 0.5)) %>%
+  group_by(marker_2) %>% 
+  filter(any(abs(difference) > 0.5)) %>%
+  pivot_wider(names_from = marker_1, values_from = difference, values_fill = 0) %>%
+  column_to_rownames("marker_2") %>%
+  ComplexHeatmap::pheatmap(breaks = seq(-1, 1, 0.1),
+                           color = heatmap_gradient(100),
+                           fontsize = 8,
+                           cellwidth = 8,
+                           cellheight = 8,
+                           clustering_method = "ward.D2",
+                           width = 8,
+                           height = 10) %>%
+  as.ggplot()
+
+plots <- 
+  stim_annotated_cells$cell_annotation %>%
+  unique() %>%
+  set_names(., .) %>%
+  lapply(function(celltyp) {
+    condition_DPA %>% 
+      filter(celltype == celltyp) %>% 
+      
+      filter(p_val_adj < 0.001, abs(difference) > 0.3) %>% 
+      separate(marker, into = c("marker_1", "marker_2"), sep = "/") %>%
+      
+      mutate(p_val_adj = -log10(p_val_adj),
+             p_val_adj = ifelse(p_val_adj > 20, 20, p_val_adj)) %>% 
+      ColocalizationHeatmap(value_col = "difference", 
+                            size_col = "p_val_adj",
+                            colors = heatmap_gradient(100), 
+                            type = "dots") +
+      labs(title = celltyp) 
+  })
+
+pdf(
+  file = paste0(params$save_folder, "Prox_Diff_annotated_cells_heatmap.pdf"),
+  width = 10,
+  height = 10
+)
+plots
+dev.off()
+
+
+plots <- 
+  stim_annotated_cells$cell_annotation %>%
+  unique() %>%
+  set_names(., .) %>%
+  lapply(function(celltyp) {
+    plot_data <- 
+      condition_DPA %>% 
+      filter(celltype == celltyp) %>% 
+      
+      filter(p_val_adj < 0.001, abs(difference) > 0.3) %>% 
+      separate(marker, into = c("marker_1", "marker_2"), sep = "/") %>% 
+      select(marker_1, marker_2, difference, p_val_adj) %>% 
+      mutate(difference = ifelse(abs(difference) > 2, sign(difference) * 2, difference))
+    
+    
+    plot_data %>%
+      as_tbl_graph() %>% 
+      left_join(plot_data %>% 
+                  filter(marker_1 == marker_2), 
+                by = c("name" = "marker_1")) %>% 
+      ggraph(layout = "kk") +
+      geom_edge_link(aes(color = difference),
+                     edge_width = 1) +
+      geom_node_point(aes(fill = difference), 
+                      shape = 21, 
+                      size = 2,
+                      color = "gray70") +
+      geom_node_text(aes(label = name), repel = TRUE) +
+      scale_edge_width(range = c(0.1, 2)) +
+      scale_edge_color_gradientn(colours = heatmap_gradient(100),
+                                 limits = c(-1, 1) * max(abs(plot_data$difference))) +
+      scale_fill_gradientn(colours = heatmap_gradient(100),
+                           limits = c(-1, 1) * max(abs(plot_data$difference)), na.value = "gray70") +
+      scale_size(range = c(0.1, 5)) +
+      theme_bw() +
+      theme(axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title = element_blank(),
+            panel.grid = element_blank(),
+            panel.border = element_blank()) +
+      coord_fixed() +
+      labs(title = celltyp)
+  })
+    
+pdf(
+  file = paste0(params$save_folder, "Prox_Diff_annotated_cells_network.pdf"),
+  width = 10,
+  height = 10
+)
+plots
+dev.off()
+
+
+
+DefaultAssay(pg_data_processed) <- "PNA"
+prox_summary <- 
+  pg_data_processed %>%
+  subset(stim_cell_annotation %in% c("CD4 T cells", 
+                                     "CD8 T cells", 
+                                     "B cells")) %>%
+  ProximityScores(add_marker_counts = TRUE, add_marker_proportions = TRUE, 
+                  meta_data_columns = c("condition", "stim_cell_annotation")) %>%
+  pixelatorRinternal::FilterProximityScores(background_threshold_pct = background_threshold) %>% 
+  pixelatorRinternal::SummarizeProximityScores(group_vars = c("condition", "stim_cell_annotation"))
+
+prox_summary %>% 
+  filter(!is.na(stim_cell_annotation)) %>% 
+  filter(condition == "PHA PBMCs", 
+         stim_cell_annotation == "CD4 T cells") %>% 
+  filter(pct_detected > 0.75) %>% 
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 2, sign(mean_log2_ratio) * 2, mean_log2_ratio)) %>% 
+  ColocalizationHeatmap(value_col = "mean_log2_ratio", 
+                        size_col = "pct_detected",
+                        type = "dot")
+
+prox_summary %>% 
+  filter(!is.na(stim_cell_annotation)) %>% 
+  filter(condition == "Resting PBMCs", 
+         stim_cell_annotation == "CD4 T cells") %>% 
+  filter(pct_detected > 0.75) %>% 
+  # filter(marker_1 == "CD357", marker_2 == "CD357")
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 1, sign(mean_log2_ratio) * 1, mean_log2_ratio)) %>% 
+  ColocalizationHeatmap(value_col = "mean_log2_ratio", 
+                        size_col = "pct_detected",
+                        type = "dot")
+
+prox_summary %>% 
+  filter(!is.na(stim_cell_annotation)) %>% 
+  filter(condition == "Resting PBMCs", 
+         stim_cell_annotation == "CD4 T cells") %>% 
+  filter(marker_1 == "CD357", marker_2 == "CD357")
+
+
+plot_data <-  
+  pg_data_processed %>%
+  subset(stim_cell_annotation %in% c("CD4 T cells", 
+                                     "CD8 T cells", 
+                                     "B cells")) %>%
+  ProximityScores(add_marker_counts = TRUE, add_marker_proportions = TRUE, 
+                  meta_data_columns = c("condition", "stim_cell_annotation")) %>% 
+  filter(marker_1 == "CD357" | marker_2 == "CD357") %>%
+  select(marker_1, marker_2, log2_ratio, component) %>%
+  pivot_wider(names_from = component, values_from = log2_ratio, values_fill = 0) %>%
+  unite("pair", marker_1, marker_2, sep = "/") 
+
+
+pg_data_processed %>%
+  subset(stim_cell_annotation %in% c("CD4 T cells", 
+                                     "CD8 T cells", 
+                                     "B cells")) %>%
+  ProximityScores(add_marker_counts = TRUE, add_marker_proportions = TRUE, 
+                  meta_data_columns = c("condition", "stim_cell_annotation")) 
+
+bepa <- 
+  plot_data %>% 
+  column_to_rownames("pair") %>% 
+  ComplexHeatmap::pheatmap(breaks = seq(-1, 1, 0.1),
+                           color = heatmap_gradient(100),
+                           # fontsize = 6,
+                           # cellwidth = 6,
+                           # cellheight = 6,
+                           show_colnames = FALSE,
+                           clustering_method = "ward.D2", 
+                           heatmap_legend_param = list(title = "PS Difference"),
+                           annotation_col = FetchData(pg_data_processed, c("stim_cell_annotation", "condition"))[colnames(plot_data)[-1],],
+                           annotation_colors = list(stim_cell_annotation = c("B cells" = "gray", 
+                                                                            "CD4 T cells" = "orangered",
+                                                                            "CD8 T cells" = "orangered4"),
+                                                    condition = c("Resting PBMCs" = "gray", 
+                                                                  "PHA PBMCs" = "orangered")),
+                           cutree_rows = 3,
+                           width = 8,
+                           height = 10) 
+plot_data %>% 
+  column_to_rownames("pair") %>% 
+  dist() %>% 
+  hclust(method = "ward.D2") %>% 
+  cutree(k = 3) %>% 
+  enframe("pair", "cluster") %>% 
+  group_by(cluster) %>% 
+  mutate(n_members = n()) %>% 
+  arrange(n_members) %>% 
+  filter(cluster %in% 2:3) %>% 
+  separate(pair, into = c("marker_1", "marker_2"), sep = "/") %>%
+  print(n = 100)
+  
+```
+
+
+### T cell focus
+
+```{r stim_Tcell_focus, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+
+DefaultAssay(pg_data_processed) <- "PNA"
+pg_data_processed %>% 
+  subset(stim_cell_annotation %in% c("CD4 T cells", "CD8 T cells")) %>%
+  DensityScatterPlot(layer = "data",
+                   margin_density = FALSE,
+                   gate_type = "rectangle",
+                   facet_vars = c("condition", "stim_cell_annotation"),
+                   plot_gate = tibble(xmin = 2.2, xmax = 5,
+                                      ymin = 3, ymax = 6,
+                                      stim_cell_annotation = c("CD4 T cells",
+                                                               "CD8 T cells")),
+                   marker1 = "CD357", 
+                   marker2 = "CD3e")
+ggsave(
+  filename = paste0(params$save_folder, "Stim_CD3e_CD357_gate.pdf"),
+  width = 6,
+  height = 6
+)
+
+
+
+
+DefaultAssay(pg_data_processed) <- "proximity_jc"
+
+jc_per_cell <- 
+  pg_data_processed %>% 
+  subset(stim_cell_annotation %in% c("CD4 T cells", "CD8 T cells")) %>%
+  LayerData("counts") %>% 
+  apply(1, function(x) sum(x) / length(x)) %>% 
+  enframe() %>% 
+  arrange((value)) 
+
+jc_per_cell %>% 
+  ggplot(aes(value)) +
+  geom_density() +
+  scale_x_log10()
+
+mrkrs <- 
+  jc_per_cell %>% 
+  filter(value > 0.1) 
+
+apa <- 
+  pg_data_processed %>% 
+  subset(stim_cell_annotation %in% c("CD4 T cells", "CD8 T cells")) %>%
+  FindVariableFeatures(nfeatures = Inf) %>%
+  NormalizeData(margin = 2, normalization.method = "LogNormalize") %>%
+  ScaleData(do.scale = FALSE, do.center = FALSE) %>%
+  RunPCA(features = mrkrs$name) %>%
+  RunUMAP(dims = 1:10, n.neighbors = 40) %>% 
+  FindNeighbors(reduction = "pca", dims = 1:10) %>% 
+  FindClusters(resolution = 0.5) 
+  
+VariableFeatures(apa)
+
+DimPlot(apa)
+
+Embeddings(apa, "umap") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  left_join(pg_data_processed[[]] %>% 
+              as_tibble(rownames = "sample_component")) %>%
+  ggplot(aes(umap_1, umap_2, color = paste(stim_cell_annotation, condition))) +
+  geom_point() +
+  coord_fixed() +
+  scale_color_manual(values = c("CD4 T cells PHA PBMCs" = "#92B0E0",
+                                "CD4 T cells Resting PBMCs" = "#224792",
+                                "CD8 T cells PHA PBMCs" = "#A2DACE",
+                                "CD8 T cells Resting PBMCs" = "#1B7E6F")) +
+  theme_bw()
+
+FeaturePlot(apa, 
+            features = c("CD192/CD45RO", "CD192/CD4", "CD35/CD82", "CD134/CD26", "CD134/TIGIT", 
+                         "CD152/CD39", "CD103/CD27", "CD103/CD45RA", "CD103/CD31", "CD38/CD41", 
+                         "CD31/CD4", "CD366/CD41", "CD244/CD8", "CD94/CD94", "CD8/GPR56", 
+                         "CD36/CD411", "CD41/CD41", "CD163/CD52", "CD36/CD83", "CD21/CD8", 
+                         "CD371/CD8", "CD152/CD200", "CD152/CD45RA1", "CD152/CD69"), 
+            cols = c("gray85", "orangered"), coord.fixed = TRUE) 
+
+apa_de <- 
+  FindAllMarkers(apa, 
+                 only.pos = TRUE, 
+                 min.pct = 0.1, 
+                 logfc.threshold = 0.1) %>% 
+  as_tibble(rownames = "marker") 
+
+apa_de %>% 
+  filter(p_val_adj < 0.0000001, 
+         abs(avg_log2FC) > 1) %>% 
+  group_by(cluster) %>% 
+  top_n(3, abs(avg_log2FC)) %>%
+  # print(n = 100)
+  pull(1) %>% 
+  unique() %>% 
+  dput
+
+DefaultAssay(pg_data_processed) <- "proximity_jc"
+
+apa <- 
+  pg_data_processed %>% 
+  subset(stim_cell_annotation %in% c("CD4 T cells", "CD8 T cells")) %>%
+  LayerData(layer = "data") %>%
+  t() %>% 
+  pca(nPcs = 20)
+
+  
+apa@scores %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  left_join(pg_data_processed[[]] %>% 
+              as_tibble(rownames = "sample_component")) %>% 
+  ggplot(aes(PC1, PC2, color = condition)) +
+  geom_point() +
+  facet_wrap(~ stim_cell_annotation) +
+  coord_fixed() +
+  theme_bw()
+
+apa_umap <- 
+  apa@scores %>% 
+  uwot::umap()
+
+  
+apa_umap %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  left_join(pg_data_processed[[]] %>% 
+              as_tibble(rownames = "sample_component")) %>% 
+  ggplot(aes(V1, V2, color = condition)) +
+  geom_point() +
+  facet_wrap(~ stim_cell_annotation) +
+  coord_fixed() +
+  theme_bw()
+
 
 ```

@@ -1,0 +1,26 @@
+sample_id,filename,sample_alias,dataset,pg_id,pna_id,condition,cell_number,status,Comment
+PNA062_unstim_PBMCs_1000cells_S02,PNA062_unstim_PBMCs_1000cells_S02_S2.layout.pxl,Resting_PBMC,QC,PGseq283,PNA062,Resting PBMCs,1000,In analysis,
+PNA062_PHA_PBMCs_1000cells_S04,PNA062_PHA_PBMCs_1000cells_S04_S4.layout.pxl,PHA_PBMC,QC,PGseq283,PNA062,PHA PBMCs,1000,In analysis,
+PNA062_Raji_1000cells_S06,PNA062_Raji_1000cells_S06_S6.layout.pxl,Raji,QC,PGseq283,PNA062,Raji,1000,Data available,
+S1_PBMC_alone_r1,,,Appnote,PGseq278,NA,Resting PBMCs,1000,Discarded,Severe bleed-over
+S2_Coculture_isotype_r1,,,Appnote,PGseq278,NA,Coculture isotype,1000,Discarded,Severe bleed-over
+S3_Coculture_trastuzumab_r1,,,Appnote,PGseq278,NA,Coculture trastuzumab,1000,Discarded,Severe bleed-over
+S4_PBMC_alone_SKBR3_r1,,,Appnote,PGseq278,NA,PBMCs SKBR3,1000,Discarded,Severe bleed-over
+PNA065_CARTcells_S01,,CART,CAR T,PGseq284,PNA065,CAR T cells only,500,In analysis,
+PNA065_CARTcells_Raji_4hrs_1to1_S02,,CART:Raji_1:1_4h,CAR T,PGseq284,PNA065,"CART:Raji 1:1, 4hrs co-culture",500,In analysis,
+PNA065_CARTcells_Raji_4hrs_5to1_S03,,CART:Raji_5:1_4h,CAR T,PGseq284,PNA065,"CART:Raji 5:1, 4hrs co-culture",500,In analysis,
+PNA065_Raji_S04,,Raji,CAR T,PGseq284,PNA065,Raji only,500,In analysis,
+PNA065_CARTcells_Raji_24hrs_1to1_S05,,CART:Raji_1:1_24h,CAR T,PGseq284,PNA065,"CART:Raji 1:1, 24hrs co-culture",500,In analysis,
+PNA065_CARTcells_Raji_24hrs_5to1_S03,,CART:Raji_5:1_24h,CAR T,PGseq284,PNA065,"CART:Raji 5:1, 24hrs co-culture",500,In analysis,
+PNA065_PBMC_S06,,PBMC,CAR T,PGseq284,PNA065,PBMC-3832 only,500,In analysis,
+PNA065_PBMC_CART_spiked_S07,,PBMC:0.1CART,CAR T,PGseq284,PNA065,PBMC+10% CAR-T cells spiked,500,In analysis,
+PNA065_CART_RAJI_pooled_afterPNA_S09,,PBMC:CART_preamp,CAR T,PGseq284,PNA065,CART cells and Raji pooled before pre-amp,500,In analysis,
+PNA066_CARTcells_S01,,CART,CAR T,PGseq284,PNA066,CAR T cells only,500,In analysis,
+PNA066_CARTcells_Raji_4hrs_1to1_S02,,CART:Raji_1:1_4h,CAR T,PGseq284,PNA066,"CART:Raji 1:1, 4hrs co-culture",500,In analysis,
+PNA066_CARTcells_Raji_4hrs_5to1_S03,,CART:Raji_5:1_4h,CAR T,PGseq284,PNA066,"CART:Raji 5:1, 4hrs co-culture",500,In analysis,
+PNA066_Raji_S04,,Raji,CAR T,PGseq284,PNA066,Raji only,500,In analysis,
+PNA066_CARTcells_Raji_24hrs_1to1_S05,,CART:Raji_1:1_24h,CAR T,PGseq284,PNA066,"CART:Raji 1:1, 24hrs co-culture",500,In analysis,
+PNA066_CARTcells_Raji_24hrs_5to1_S06,,CART:Raji_5:1_24h,CAR T,PGseq284,PNA066,"CART:Raji 5:1, 24hrs co-culture",500,In analysis,
+PNA066_PBMC_S07,,PBMC,CAR T,PGseq284,PNA066,PBMC-3832 only,500,In analysis,
+PNA066_PBMC_CART_spiked_S08,,PBMC:0.1CART,CAR T,PGseq284,PNA066,PBMC+10% CAR-T cells spiked,500,In analysis,
+PNA066_CART_RAJI_pooled_afterPNA_S09,,PBMC:CART_preamp,CAR T,PGseq284,PNA066,CART cells and Raji pooled together after PNA before pre-amp to understand the bleed over,500,In analysis,

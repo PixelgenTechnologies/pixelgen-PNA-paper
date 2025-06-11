@@ -1,0 +1,10 @@
+,Naive T cell,TSCM,TCM,TEM,TEFF,TEMRA
+CD45RA,+,+,-,-,+,+
+CD45RO,-,-,+,+,-,-
+CD28,+,+,+,+,-,-
+CD95,-,+,+,+,+,-
+CD27,+,+,+,+/-,-,-
+CD127,+,+,+,-,-,-
+CD57,-,-,-,+/-,+,+
+CD11a,low,high,high,high,high,high
+CD58,low,high,high,high,high,low

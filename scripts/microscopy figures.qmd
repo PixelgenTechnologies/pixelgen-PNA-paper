@@ -1,0 +1,51 @@
+---
+title: "microscopy figure"
+format:
+  html:
+    theme: cerulean
+    page-layout: full
+    embed-resources: true
+    code_folding: show
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+  
+---
+
+# 
+
+
+
+```{r load_packages, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(pixelatorR)
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(ggplotify)
+library(tidygraph)
+library(pcaMethods)
+library(pbapply)
+library(ggpubr)
+library(ggrastr)
+source("theme.R")
+source("utility.R")
+```
+
+
+# Plotting
+
+## Proximity and abundance 
+
+```{r load_data, echo = FALSE, message = FALSE, warning = FALSE}
+
+plot_data <- 
+  read_csv("../data/microscopy_data_Values.csv")
+
+plot_data %>% 
+  ggplot(aes(`Distance_(microns)`, Gray_Value)) +
+  geom_line() +
+  theme_bw() +
+  labs(x = "Distance (microns)", y = "Gray Value")
+ggsave("../results/microscopy_plot.pdf", width = 4, height = 3, dpi = 300)
+```

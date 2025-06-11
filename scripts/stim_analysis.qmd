@@ -1,0 +1,2782 @@
+---
+title: "Flow validation of PBMCs"
+format:
+  html:
+    theme: cerulean
+    page-layout: full
+    embed-resources: true
+    code_folding: show
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+params: 
+
+  sample_sheet: "../data/sample_metadata.csv"
+  data_folder: "../data/"
+  save_folder: "../results/stim_results/"
+  control_markers: "c('mIgG1', 'mIgG2a', 'mIgG2b')"
+  molecule_rank_cutoff: 20000
+  tau_dispersion_cutoff: 0.925
+  control_marker_cutoff: 0.1
+  norm_method: "CLR"
+  clustering_resolution: 1
+---
+
+# 
+
+
+
+```{r load_packages, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(pixelatorR)
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(ggplotify)
+library(tidygraph)
+library(pcaMethods)
+library(pbapply)
+library(ggraph)
+source("theme.R")
+source("utility.R")
+```
+
+
+## Run settings 
+
+```{r run_settings, echo = FALSE, results = 'asis', warning = FALSE, message = FALSE}
+
+# --- Experiment parameters ---
+
+
+# Assign parameters to variables
+data_folder <- params$data_folder
+control_markers <-
+  eval(parse(text = params$control_markers))
+molecule_rank_cutoff <- params$molecule_rank_cutoff
+tau_dispersion_cutoff <- params$tau_dispersion_cutoff
+control_marker_cutoff <- params$control_marker_cutoff
+norm_method <- params$norm_method
+clustering_resolution <- params$clustering_resolution
+
+# load sample settings
+sample_sheet <- 
+  read_csv(params$sample_sheet) %>% 
+  filter(dataset %in% c("Stim"))
+
+metadata <- 
+  sample_sheet %>% 
+  select(sample_alias, condition) 
+
+sample_aliases <- 
+  sample_sheet %>% 
+  select(sample = sample_id, sample_alias) %>% 
+  deframe()
+
+
+```
+
+
+
+```{r read_counts, echo = FALSE, warning = FALSE, message = FALSE}
+
+# Get file paths
+data_files <- 
+  tibble(filename = paste0(data_folder, sample_sheet$filename),
+         sample_alias = sample_sheet$sample_alias) 
+
+# Create a list of Seurat objects
+pg_data <- 
+  data_files %>% 
+  select(sample_alias, filename) %>% 
+  deframe() %>% 
+  lapply(ReadPNA_Seurat)
+
+stopifnot("Some samples are not loaded" = length(pg_data) == nrow(metadata))
+
+pg_data <- 
+  pg_data %>% 
+  map(. %>% 
+        AddMetaData(FetchData(., "n_umi") %>%
+                      as_tibble(rownames = "component") %>% 
+                      mutate(logmolecules = log10(n_umi), 
+                             rank = rank(-n_umi, ties.method = "random")) %>% 
+                      column_to_rownames("component"))) 
+
+
+pg_data <-
+  merge(
+    pg_data[[1]],
+    y = pg_data[-1],
+    add.cell.ids = names(pg_data)
+  ) %>% 
+  JoinLayers()
+
+pg_data <- 
+  pg_data %>% 
+  AddMetaData(colnames(pg_data) %>% 
+                enframe("i", "comp_id") %>%
+                mutate(sample_alias = str_extract(comp_id, ".*_") %>% 
+                         str_remove("_$")) %>% 
+                left_join(metadata, by = "sample_alias") %>% 
+                mutate(sample_alias = factor(sample_alias, metadata$sample_alias),
+                       donor = factor(str_extract(sample_alias, "Donor \\d"), c("Donor 1", "Donor 2")),
+                       condition = factor(condition, unique(metadata$condition))) %>%
+                select(-i) %>% 
+                column_to_rownames("comp_id"))
+
+
+
+
+```
+
+
+
+## Cell filtering
+
+### Molecule Rank Plot
+
+
+```{r molecule_rank_plot, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, message=FALSE, results='asis'}
+
+pg_data %>% 
+  FetchData(c("sample_alias", "n_umi", "rank")) %>% 
+  ggplot(aes(rank, n_umi, color = sample_alias)) + 
+  geom_point(size = 0.5, show.legend = FALSE) +
+  geom_hline(yintercept = molecule_rank_cutoff, linetype = "dashed", color = "#E05573") +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_bw() +
+  labs(
+    x = "Component rank (by number of protein molecules)",
+    y = "Number of protein molecules",
+    title = "Molecule rank plot")
+ggsave(
+  filename = paste0(params$save_folder, "molecule_rank_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+
+
+pg_data[[]] %>% 
+  ggplot(aes(sample_alias, n_umi, fill = condition)) +
+  geom_violin(draw_quantiles = 0.5) +
+  geom_text(data = . %>% 
+              group_by(sample_alias, condition) %>%
+              summarise(n_umi = median(n_umi)),
+            aes(label = round(n_umi))) +
+  geom_hline(yintercept = molecule_rank_cutoff, linetype = "dashed", color = "#E05573") +
+  scale_y_log10() +
+  # scale_fill_manual(values = sample_palette) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(x = "",
+       y = "Number of molecules")
+ggsave(
+  filename = paste0(params$save_folder, "molecules_by_condition.pdf"),
+  width = 8,
+  height = 5
+)
+
+
+```
+
+### Dispersion
+
+```{r dispersion_plot, fig.width = 8, fig.height = 8, out.width = "100%", dpi = 150, echo = FALSE}
+
+
+pg_data <- 
+  pg_data %>% 
+  AddMetaData(
+    LayerData(pg_data, "counts") %>% 
+      apply(2, function(x) sum(1 - x / max(x)) / (length(x) - 1)),
+    col.name = "tau"
+  ) 
+  
+
+
+pg_data[[]] %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  ggplot(aes(tau, n_umi, color = tau < tau_dispersion_cutoff)) +
+  geom_point(show.legend = F) +
+  geom_vline(xintercept = tau_dispersion_cutoff, linetype = "dashed", color = "#E05573") +
+  facet_wrap(~sample_alias) +
+  theme_bw() +
+  scale_color_manual(values = yes_no_palette) +
+  scale_y_log10() +
+  labs(title = "Dispersion plot",
+       y = "Number of molecules",
+       x = "Tau")
+ggsave(
+  filename = paste0(params$save_folder, "dispersion_plot.pdf"),
+  width = 8,
+  height = 8
+)
+
+```
+
+### Control Markers
+
+```{r control_marker_plot, fig.width = 8, fig.height = 8, out.width = "100%", dpi = 150, echo = FALSE}
+
+pg_data[[]] %>% 
+  as_tibble() %>% 
+  mutate(isotype_percent = 100 * isotype_fraction) %>% 
+  ggplot(aes(sample_alias, isotype_percent)) +
+  geom_violin(fill = "#DAD6D7") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_hline(yintercept = control_marker_cutoff, linetype = "dashed", color = "#E05573") +
+  geom_text(data = . %>% 
+              group_by(sample_alias) %>%
+              summarise(median_isotype_percent = median(isotype_percent)),
+            aes(y = median_isotype_percent,
+                label = paste0(round(median_isotype_percent, 2), " %")),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous(expand = expansion(c(0, 0.2))) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Percent control markers")
+ggsave(
+  filename = paste0(params$save_folder, "control_markers_plot.pdf"),
+  width = 8,
+  height = 8
+)
+
+pg_data %>% 
+  FetchData(c("sample_alias", "n_umi", "rank", "isotype_fraction")) %>% 
+  ggplot(aes(rank, n_umi, color = log10(isotype_fraction), size = isotype_fraction)) + 
+  geom_point() +
+  geom_hline(yintercept = molecule_rank_cutoff, linetype = "dashed", color = "#E05573") +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_size_continuous(range = c(0.1, 3)) +
+  scale_color_gradientn(colors = cherry_gradient(100)) +
+  theme_bw() +
+  labs(
+    x = "Component rank (by number of protein molecules)",
+    y = "Number of protein molecules",
+    title = "Molecule rank plot")
+ggsave(
+  filename = paste0(params$save_folder, "molecule_rank_plot_control_markers.pdf"),
+  width = 8,
+  height = 8
+)
+```
+
+
+### Cell filtering
+
+Here we summarise the filtering of small cells, dispersion outliers, as well as control outliers.
+
+```{r cell_filtering_plot, message=FALSE, warning = FALSE, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, results = 'asis'}
+plot_data <- 
+  expand_grid(sample_alias = unique(pg_data[[]]$sample_alias),
+              size_outlier = c(FALSE, TRUE),
+              dispersion_outlier = c(FALSE, TRUE),
+              control_outlier = c(FALSE, TRUE)) %>% 
+  mutate(n_true = size_outlier + dispersion_outlier + control_outlier) %>%
+  arrange(n_true, size_outlier, dispersion_outlier + control_outlier) %>%
+  left_join(pg_data[[]] %>% 
+              as_tibble(rownames = "sample_component") %>% 
+              mutate(size_outlier = n_umi <= molecule_rank_cutoff,
+                     dispersion_outlier = tau <= tau_dispersion_cutoff,
+                     control_outlier = 100 * isotype_fraction >= control_marker_cutoff) %>%
+              group_by(sample_alias, size_outlier, dispersion_outlier, control_outlier) %>%
+              count() %>% 
+              ungroup()) %>% 
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  
+  group_by(sample_alias) %>% 
+  mutate(column = row_number()) 
+
+
+p1 <- 
+  plot_data %>% 
+  pivot_longer(cols = c(size_outlier, dispersion_outlier, control_outlier)) %>%
+  mutate(name = factor(name, c("size_outlier", "dispersion_outlier", "control_outlier"))) %>% 
+  ggplot(aes(column, name, fill = value)) +
+  geom_point(size = 4,
+             shape = 21,
+             show.legend = F) +
+  scale_fill_manual(values = c("FALSE" = "white", "TRUE" = "black")) +
+  scale_x_discrete(expand = expansion(mult = c(0.05, 0.05), add = c(0.5, 0.5))) +
+  coord_equal() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title = element_blank(), 
+        panel.grid = element_blank(),
+        panel.background = element_blank())
+
+
+p2 <-
+  plot_data %>% 
+  mutate(`QC Cell\nfiltering` = ifelse(size_outlier | dispersion_outlier | control_outlier,
+                                       "Removed cell", "Kept cell")) %>%
+  ggplot(aes(column, n, fill = `QC Cell\nfiltering`)) +
+  geom_col() +
+  geom_text(aes(label = n), 
+            vjust = 0) +
+  facet_wrap(~sample_alias, ncol = 1) +  
+  scale_y_continuous(expand = expansion(c(0, 0.15))) +
+  scale_fill_manual(values = yes_no_palette) +
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(), 
+        panel.grid = element_blank(),
+        panel.background = element_blank()) +
+  labs(y = "Number of cells")
+
+p2 / p1
+ggsave(
+  filename = paste0(params$save_folder, "cell_filtering_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+```
+
+
+```{r cell_filtering, echo = FALSE, include = FALSE}
+pg_data_processed <- 
+  pg_data %>% 
+  subset(subset = n_umi > molecule_rank_cutoff) %>%
+  subset(subset = tau > tau_dispersion_cutoff) %>% 
+  subset(subset = 100 * isotype_fraction < control_marker_cutoff) 
+
+rm(pg_data)
+gc()
+```
+
+
+
+
+
+## Quality metrics
+
+### Sequencing
+
+#### Reads per cell 
+
+```{r qc_metrics_reads_per_cell_figure, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, results = 'asis'}
+
+
+plot_data <- 
+  pg_data_processed[[]] %>% 
+  as_tibble() %>% 
+  select(sample_alias, reads_in_component) 
+
+plot_data_sum <- 
+  plot_data %>% 
+  group_by(sample_alias) %>%
+  summarise(median_reads_in_component = median(reads_in_component))
+
+plot_data %>% 
+  ggplot(aes(sample_alias, reads_in_component)) +
+  geom_violin(fill = "#DAD6D7") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum, 
+            aes(y = median_reads_in_component,
+                label = paste0(round(median_reads_in_component / 1e3), "k")),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_log10() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Reads per cell")
+ggsave(
+  filename = paste0(params$save_folder, "reads_per_cell_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+
+```
+
+#### k-coreness 
+
+```{r qc_metrics_nodes_kcore_figure, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, message=FALSE, results = 'asis'}
+
+
+plot_data <- 
+  pg_data_processed[[]] %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  select(1, sample_alias, n_umi, matches("^k_core")) %>% 
+  pivot_longer(cols = matches("k_core"), 
+               names_to = "k_core", values_to = "nodes") %>% 
+  mutate(nodes = ifelse(!is.finite(nodes), 0, nodes),
+         percent_nodes = 100 * nodes / n_umi,
+         coreness = as.numeric(str_extract(k_core, "[0-9]+"))) 
+
+plot_data_sum <- 
+  plot_data %>% 
+  group_by(sample_component, sample_alias) %>% 
+  summarise(mean_coreness = weighted.mean(coreness, nodes),
+            percent_dangling_nodes = percent_nodes[coreness == 1],
+            percent_well_connected_nodes = sum(percent_nodes[coreness %in% 3:5])) 
+
+plot_data_sum_sample <-
+  plot_data_sum %>%  
+  group_by(sample_alias) %>% 
+  summarise(median_mean_coreness = median(mean_coreness),
+            median_percent_dangling_nodes = median(percent_dangling_nodes),
+            median_percent_well_connected_nodes = median(percent_well_connected_nodes))
+
+# Mean coreness
+p <- 
+  plot_data_sum %>% 
+  ggplot(aes(sample_alias, mean_coreness)) +
+  geom_violin(fill = "#DAD6D7",
+              scale = "width") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum_sample,
+            aes(y = median_mean_coreness,
+                label = round(median_mean_coreness, 2)),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Mean coreness", 
+       title = "Mean Coreness",
+       subtitle = "The average coreness of nodes in each component")
+
+print(p)
+ggsave(
+  filename = paste0(params$save_folder, "mean_coreness_plot.pdf"),
+  width = 8,
+  height = 5
+)
+# Dangling nodes - % coreness 1
+p <- 
+  plot_data_sum %>% 
+  ggplot(aes(sample_alias, percent_dangling_nodes)) +
+  geom_violin(fill = "#DAD6D7",
+              scale = "width") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum_sample,
+            aes(y = median_percent_dangling_nodes,
+                label = round(median_percent_dangling_nodes, 2)),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Dangling nodes [%]", 
+       title = "Percent dangling nodes",
+       subtitle = "The percentage of nodes with coreness 1")
+
+print(p)
+
+ggsave(
+  filename = paste0(params$save_folder, "dangling_nodes_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+# Well-connected nodes - % coreness 3-5
+p <- 
+  plot_data_sum %>% 
+  ggplot(aes(sample_alias, percent_well_connected_nodes)) +
+  geom_violin(fill = "#DAD6D7",
+              scale = "width") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum_sample,
+            aes(y = median_percent_well_connected_nodes,
+                label = round(median_percent_well_connected_nodes, 2)),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Well-connected nodes [%]", 
+       title = "Percent well-connected nodes",
+       subtitle = "The percentage of nodes with coreness 3-5")
+
+print(p)
+
+ggsave(
+  filename = paste0(params$save_folder, "well_connected_nodes_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+```
+
+### Marker composition
+
+
+#### Control markers 
+
+```{r qc_metrics_frac_control_figure, fig.width = 8, fig.height = 5, out.width = "100%", dpi = 150, echo = FALSE, results = 'asis'}
+
+plot_data <- 
+  pg_data_processed[[]] %>% 
+  as_tibble() %>% 
+  mutate(isotype_percent = 100 * isotype_fraction,
+         isotype_counts = round(isotype_fraction * n_umi, 0)) 
+
+plot_data_sum <- 
+  plot_data %>% 
+  group_by(sample_alias) %>%
+  summarise(median_isotype_percent = median(isotype_percent),
+            median_isotype_counts = median(isotype_counts))
+
+
+p <- 
+  plot_data %>% 
+  ggplot(aes(sample_alias, isotype_percent)) +
+  geom_violin(fill = "#DAD6D7") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum, 
+            aes(y = median_isotype_percent,
+                label = paste0(round(median_isotype_percent, 2), " %")),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_continuous(expand = expansion(c(0, 0.2))) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Percent control markers")
+
+print(p)
+
+ggsave(
+  filename = paste0(params$save_folder, "control_markers_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+p <- 
+  plot_data %>% 
+  ggplot(aes(sample_alias, isotype_counts + 1)) +
+  geom_violin(fill = "#DAD6D7") +
+  geom_boxplot(width = 0.1,
+               fill = "#B4ADAF") +
+  geom_text(data = plot_data_sum, 
+            aes(y = median_isotype_counts,
+                label = median_isotype_counts),
+            vjust = -0.4,
+            size = 3) +
+  scale_y_log10(expand = expansion(c(0, 0.2))) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = NULL, y = "Control markers counts")
+
+print(p)
+ggsave(
+  filename = paste0(params$save_folder, "control_markers_counts_plot.pdf"),
+  width = 8,
+  height = 5
+)
+
+```
+
+
+## Data Processing 
+
+### Dimred and clustering
+
+```{r data_processing, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+annotation_markers <-
+  c("CD10", "CD117", "CD11a", "CD11b", 
+    "CD11c", "CD123", "CD127", "CD138", "CD14", "CD141", "CD158", 
+    "CD159a", "CD159c", "CD16", "CD19", "CD1c", "CD20", "CD24", "CD25", 
+    "CD27", "CD28", "CD3e", "CD335", "CD337", "CD35", "CD38", 
+    "CD4", "CD8", "CD45RA", "CD45RO", "CD56", "CD57", "CD58", "CD66b", "CD95", 
+    "HLA-DR", "IgD", "TCRgd", "TCRva7.2", "TCRVd2", "TCRVg9", 
+    "CD41", "CD9", 
+    
+    "TCRab", "CD45", "CD45RB", "CD2", "CD5", "CD26", "CD161", 
+    "CD21", "CD22", "CD33", "CD79a", "CD7", "IgE", "IgM", "NKp80")
+
+
+pg_data_processed <- 
+  pg_data_processed %>%
+  NormalizeData(normalization.method = norm_method, margin = 2) %>%
+  FindVariableFeatures(nfeatures = 75) %>%
+  ScaleData() 
+
+VariableFeatures(pg_data_processed)[!VariableFeatures(pg_data_processed) %in% annotation_markers] 
+rownames(pg_data_processed)[!rownames(pg_data_processed) %in% annotation_markers] %>% sort()
+
+VariableFeatures(pg_data_processed) <- unique(c(annotation_markers, VariableFeatures(pg_data_processed)))
+
+pg_data_processed <- 
+  pg_data_processed %>% 
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(reduction = "pca", dims = 1:15, n.neighbors = 15, seed.use = 37) 
+
+Reductions(pg_data_processed, "pca")@stdev %>% 
+  enframe("PC", "sd") %>% 
+  ggplot(aes(PC, sd)) +
+  geom_line() +
+  geom_point()
+  
+pg_data_processed <- 
+  pg_data_processed %>% 
+  FindNeighbors(reduction = "pca", dims = 1:15, k.param = 15) %>% 
+  FindClusters(random.seed = 37, resolution = 3)
+
+plot_embedding(pg_data_processed, "umap",
+                 metavars = "seurat_clusters",
+                 # pal = cell_palette,
+                 plot_title = "Clusters")
+plot_embedding(pg_data_processed, "umap",
+                 metavars = "sample_alias",
+                 # pal = cell_palette,
+                 plot_title = "samples")
+
+```
+
+
+### Gating
+
+```{r gate_analysis, echo = FALSE, include = FALSE}
+
+
+# CD45 vs CD3
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD3e", marker2 = "CD45", 
+                     facet_vars = c("condition", "donor"), 
+                     plot_gate = tibble(xmin = 3, xmax = 6.5, ymin = 3, ymax = 6.7))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD3e_vs_CD45.pdf"),
+  
+  width = 5,
+  height = 5
+)
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD3e", marker2 = "CD45", 
+                     plot_gate = tibble(xmin = 3, xmax = 6.5, ymin = 3, ymax = 6.7))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD3e_vs_CD45_nofacet.pdf"),
+  
+  width = 3,
+  height = 3
+)
+
+
+T_cells <- 
+  pg_data_processed %>% 
+  subset(subset = CD3e > 3 & CD45 > 3) %>%
+  colnames()
+
+# CD3 vs CD8
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD3e", marker2 = "CD8", 
+                     facet_vars = c("condition", "donor"), 
+                     plot_gate = tibble(xmin = 3, xmax = 6.5, ymin = 3.5, ymax = 6.5))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD3e_vs_CD8.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+# CD3 vs CD4
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD3e", marker2 = "CD4", 
+                     facet_vars = c("condition", "donor"), 
+                     plot_gate = tibble(xmin = 3, xmax = 6.5, ymin = 2.5, ymax = 4.6))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD3e_vs_CD4.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+# CD8 vs CD4
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD8", marker2 = "CD4", 
+                     facet_vars = c("condition", "donor"))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD8_vs_CD4.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+# CD3 vs CD56
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD3e", marker2 = "CD56", 
+                     facet_vars = c("condition", "donor"), 
+                     plot_gate = tibble(xmin = 0, xmax = 2, ymin = 0.6, ymax = 5))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD3e_vs_CD56.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+# CD45 vs CD19
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD45", marker2 = "CD19", 
+                     facet_vars = c("condition", "donor"), 
+                     plot_gate = tibble(xmin = 2, xmax = 6, ymin = 1.5, ymax = 4.3))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD45_vs_CD19.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+B_cells <- 
+  pg_data_processed %>% 
+  subset(subset = CD45 > 2 & CD19 > 1.5) %>%
+  colnames()
+
+# CD45 vs CD14
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD45", marker2 = "CD14", 
+                     facet_vars = c("condition", "donor"), 
+                     plot_gate = tibble(xmin = 3, xmax = 6, ymin = 1, ymax = 6))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD45_vs_CD14.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+# CD14 vs CD86
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD14", marker2 = "CD86", 
+                     facet_vars = c("condition", "donor"), 
+                     plot_gate = tibble(xmin = 0.7, xmax = 4, ymin = 0.7, ymax = 5))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD14_vs_CD86.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+# CD19 vs CD80
+pg_data_processed %>%
+  DensityScatterPlot(marker1 = "CD19", marker2 = "CD80", 
+                     facet_vars = c("condition", "donor"))
+ggsave(
+  filename = paste0(params$save_folder, "gate_CD19_vs_CD80.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+
+```
+
+
+
+#### T cells 
+
+```{r t_cells, echo = FALSE, include = FALSE}
+
+
+# T: CD4 vs CD8
+pg_data_processed %>%
+  subset(cells = T_cells) %>% 
+  DensityScatterPlot(marker1 = "CD4", marker2 = "CD8", 
+                     facet_vars = c("condition", "donor"), 
+                     plot_gate = tibble(xmin = c(2.1, 0), 
+                                        xmax = c(4.8, 1.5),
+                                        ymin = c(0, 3.5), 
+                                        ymax = c(2.8, 6.5)))
+ggsave(
+  filename = paste0(params$save_folder, "gate_Tonly_CD4_vs_CD8.pdf"),
+  
+  width = 5,
+  height = 5
+)
+pg_data_processed %>%
+  subset(cells = T_cells) %>% 
+  DensityScatterPlot(marker1 = "CD4", marker2 = "CD8", 
+                     plot_gate = tibble(xmin = c(2.1, 0), 
+                                        xmax = c(4.8, 1.5),
+                                        ymin = c(0, 3.5), 
+                                        ymax = c(2.8, 6.5)))
+ggsave(
+  filename = paste0(params$save_folder, "gate_Tonly_CD4_vs_CD8_nofacet.pdf"),
+  
+  width = 3,
+  height = 3
+)
+
+CD4T_cells <- 
+  pg_data_processed %>% 
+  subset(cells = T_cells) %>% 
+  subset(subset = CD4 > 2.1 & CD4 < 4.8 & CD8 < 2.8 ) %>%
+  colnames()
+
+CD8T_cells <-
+  pg_data_processed %>% 
+  subset(cells = T_cells) %>% 
+  subset(subset = CD8 > 3.5 & CD8 < 6.5 & CD4 < 1.5) %>%
+  colnames()
+
+
+
+```
+
+
+### Abundance analysis
+
+```{r abundance_analysis}
+
+
+da_results <- 
+  list(CD4T = CD4T_cells, 
+       CD8T = CD8T_cells, 
+       B = B_cells) %>% 
+  lapply(function(cell_subset) {
+    pg_data_processed %>%
+      subset(cells = cell_subset) %>% 
+      FindMarkers(
+        ident.1 = "PHA PBMCs",
+        ident.2 = "Resting PBMCs",
+        group.by = "condition",
+        latent.vars = "donor",
+        test.use = "MAST",
+        logfc.threshold = 0
+      ) %>% 
+      as_tibble(rownames = "marker")
+  }) %>% 
+  bind_rows(.id = "cell_type") %>% 
+  mutate(p_val_adj = p.adjust(p_val, method = "bonferroni"))
+  
+
+da_results %>% 
+  ggplot(aes(avg_log2FC, -log10(p_val_adj))) +
+  geom_point(size = 0.1) +
+  geom_text(aes(label = ifelse(p_val_adj < 0.05 & abs(avg_log2FC) > 0.5, marker, "")),
+            size = 2, 
+            vjust = 0,
+            segment.color = "grey50") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "#E05573") +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "#E05573") +
+  facet_wrap(~cell_type, scales = "free") +
+  theme_bw()
+ggsave(
+  filename = paste0(params$save_folder, "abundance_analysis_volcano.pdf"),
+  
+  width = 8,
+  height = 5
+)  
+
+da_results %>% 
+  group_by(marker) %>% 
+  filter(any(abs(avg_log2FC) > 1 & p_val_adj < 0.05)) %>% 
+  select(marker, cell_type, avg_log2FC) %>% 
+  pivot_wider(names_from = cell_type, values_from = avg_log2FC) %>% 
+  column_to_rownames("marker") %>%
+  ComplexHeatmap::pheatmap(
+    color = heatmap_gradient(100),
+    breaks = seq(-3, 3, length.out = 101),
+    heatmap_legend_param = list(title = "Log2FC"),
+    cellwidth = 8, 
+    cellheight = 8
+  ) %>% 
+  as.ggplot()
+
+ggsave(
+  filename = paste0(params$save_folder, "abundance_analysis_heatmap.pdf"),
+  
+  width = 8,
+  height = 12
+)
+
+plot_data <- 
+  LayerData(pg_data_processed, "data") %>% 
+  as_tibble(rownames = "marker") %>% 
+  pivot_longer(cols = -marker, names_to = "sample_component", values_to = "value") %>% 
+  mutate(cell_type = case_when(
+    sample_component %in% CD4T_cells ~ "CD4T",
+    sample_component %in% CD8T_cells ~ "CD8T",
+    sample_component %in% B_cells ~ "B",
+    TRUE ~ "Other"
+  )) %>% 
+  left_join(FetchData(pg_data_processed, c("sample_alias", "condition", "donor")) %>% 
+              as_tibble(rownames = "sample_component"), 
+            by = "sample_component") %>% 
+  filter(cell_type != "Other") %>% 
+  group_by(sample_alias, condition, donor, cell_type, marker) %>% 
+  summarise(median = median(value)) %>% 
+  ungroup()
+  
+plots <- 
+  plot_data %>% 
+  group_by(cell_type) %>% 
+  group_split() %>% 
+  lapply(function(g_data) {
+    
+    g_data %>% 
+      select(sample_alias, marker, median) %>%
+      group_by(marker) %>% 
+      filter(any(median > 1)) %>% 
+      pivot_wider(names_from = sample_alias, values_from = median) %>% 
+      column_to_rownames("marker") %>%
+      ComplexHeatmap::pheatmap(
+        color = cherry_light_gradient(100),
+        breaks = seq(0, 6, length.out = 101),
+        main = unique(g_data$cell_type),
+        heatmap_legend_param = list(title = "Median CLR"),
+        cellwidth = 8, 
+        cellheight = 8
+      ) %>% 
+      as.ggplot()
+  })
+
+pdf(
+  file = paste0(params$save_folder, "abundance_analysis_heatmap_per_cell_type.pdf"),
+  width = 8,
+  height = 12
+)  
+plots
+dev.off()
+
+
+pg_data_processed %>%
+  subset(cells = c(T_cells, B_cells)) %>% 
+  DensityScatterPlot(marker1 = "CD3e", marker2 = "CD20", 
+                     facet_vars = c("condition", "donor"))
+ggsave(
+  filename = paste0(params$save_folder, "TplusB_gate_CD3e_vs_CD20.pdf"),
+  
+  width = 5,
+  height = 5
+)
+pg_data_processed %>%
+  subset(cells = c(T_cells, B_cells)) %>% 
+  DensityScatterPlot(marker1 = "CD3e", marker2 = "CD20", 
+                     facet_vars = c("condition")) +
+  facet_grid(~condition)
+ggsave(
+  filename = paste0(params$save_folder, "TplusB_gate_CD3e_vs_CD20_donorcombined.pdf"),
+  
+  width = 5,
+  height = 5
+)
+
+pg_data_processed %>%
+  subset(cells = c(T_cells, B_cells)) %>% 
+  DensityScatterPlot(marker1 = "CD3e", marker2 = "CD20", 
+                     plot_gate = tibble(xmin = 4, xmax = 4.6, ymin = 3, ymax = 4.2),
+                     facet_vars = c("condition")) +
+  facet_grid(~condition)
+
+example_components <- 
+  pg_data_processed %>%
+  subset(cells = c(T_cells, B_cells)) %>% 
+  subset(subset = CD3e > 4 & CD3e < 4.6 & CD20 > 3 & CD20 < 4.2) %>%
+  LoadCellGraphs() %>% 
+  ComputeLayout(layout_method = "wpmds", pivots = 200)
+  
+example_components %>% 
+  CellGraphs() %>% 
+  pixelatorRinternal::gridPlot3D(components = names(.),
+                                 markers = c("CD3e", "CD20"),
+                                 layout = "wpmds_3d", 
+                                 color_mode = "count",
+                                 point_size = 1, 
+                                 k = 2, 
+                                 color_range = c(0, 1),
+                                 plot_colors = c("gray", "orangered"))
+  
+example_components %>% 
+  CellGraphs() %>% 
+  pixelatorRinternal::gridPlot3D(components = names(.),
+                                 markers = c("HLA-ABC", "HLA-DR", "CD19", "CD20", "CD54", "CD2", "CD3e"),
+                                 layout = "wpmds_3d", 
+                                 color_mode = "gstari",
+                                 point_size = 1, 
+                                 k = 3, 
+                                 use_weights = FALSE,
+                                 color_range = c(1, 2),
+                                 plot_colors = c("gray", "orangered"))
+
+ex_comps <- 
+  c("Donor 2, PHA_008a09efb8ebf422", "Donor 2, PHA_98a09280171cf361", "Donor 2, PHA_2742ea68ab36acdc")
+
+
+example_components <- 
+  pg_data_processed %>%
+  subset(cells = ex_comps) %>%
+  LoadCellGraphs() %>% 
+  ComputeLayout(layout_method = "wpmds", pivots = 200) 
+
+example_components_cgs <-
+  example_components %>% 
+  CellGraphs() %>% 
+  pixelatorRinternal::AlignLayouts(layout_method = "wpmds_3d", 
+                                   anchor_markers = c("HLA-ABC", "HLA-DR", "CD19", "CD20", "CD54", "CD2", "CD3e"))
+
+example_components_cgs %>% 
+  pixelatorRinternal::gridPlot3D(components = names(.),
+                                 markers = c("HLA-ABC", "HLA-DR", "CD19", "CD20", "CD54", "CD2", "CD3e", "CD4", "CD8"),
+                                 layout = "wpmds_3d_aligned", 
+                                 color_mode = "gstari",
+                                 point_size = 1, 
+                                 k = 3, 
+                                 use_weights = FALSE,
+                                 color_range = c(1, 2),
+                                 plot_colors = c("gray", "orangered"),
+                                 windowRect = c(100, 100, 1600, 500))
+
+plot_data <- 
+  example_components_cgs %>% 
+  lapply(function(cg) {
+    
+    lyt <- slot(cg, "layout")[["wpmds_3d_aligned"]]
+    cnts <- slot(cg, "counts")
+    
+    keep_markers <- 
+      colSums(cnts) %>%
+      {./sum(.)} %>% 
+      {.[which(. > 0.0001)]} %>% 
+      names()
+    
+    locg <- local_G(cg@cellgraph, cnts[, keep_markers], k = 3, use_weights = FALSE)
+    # 
+    # locg %>%
+    #   cor() %>% 
+    #   {1 - .} %>% 
+    #   as.dist() %>% 
+    #   hclust(method = "ward.D2") %>% 
+    #   plot
+    
+    lyt %>% 
+      mutate(node = rownames(cnts)) %>% 
+      select(node, everything()) %>% 
+      left_join(locg %>% 
+                  as_tibble(rownames = "node"))
+    
+  }) %>% 
+  bind_rows(.id = "sample_component")
+  
+plot_markers <- 
+  c("CD3e", "CD20", "HLA-ABC", "HLA-DR", "CD19", "CD54", "CD2", "CD4", "CD8")
+
+plot <- 
+  plot_data %>% 
+  group_by(sample_component) %>% 
+  # slice_head(n = 10000) %>% 
+  arrange(z) %>% 
+  ungroup() %>% 
+  select(sample_component, node, x, y, z, any_of(plot_markers)) %>% 
+  pivot_longer(cols = any_of(plot_markers), 
+               names_to = "marker", 
+               values_to = "value") %>%
+  mutate(value = ifelse(value < 0, 0, value),
+         value = ifelse(value > 3, 3, value),
+         marker = factor(marker, plot_markers)) %>% 
+  ggplot(aes(x = x, y = y, z = z, color = value)) +
+  ggrastr::geom_point_rast(size = 0.1, raster.dpi = 300) +
+  facet_grid(sample_component ~ marker) +
+  scale_color_gradientn(colors = cherry_gradient(100)) +
+  coord_fixed() +
+  theme_void()
+  
+ggsave(
+  filename = paste0(params$save_folder, "example_components_3d.pdf"),
+  plot = plot,
+  width = 36,
+  height = 12
+)
+
+
+plot_data <- 
+  example_components_cgs %>% 
+  lapply(function(cg) {
+    
+    lyt <- slot(cg, "layout")[["wpmds_3d_aligned"]]
+    cnts <- slot(cg, "counts")
+    
+    keep_markers <- 
+      colSums(cnts) %>%
+      {./sum(.)} %>% 
+      {.[which(. > 0.0001)]} %>% 
+      names()
+    
+    
+    lyt %>% 
+      mutate(node = rownames(cnts)) %>% 
+      select(node, everything()) %>% 
+      left_join(cnts[, keep_markers] %>% 
+                  as_tibble(rownames = "node"))
+    
+  }) %>% 
+  bind_rows(.id = "sample_component")
+
+
+plot <- 
+  plot_data %>% 
+  group_by(sample_component) %>% 
+  # slice_head(n = 10000) %>% 
+  arrange(z) %>% 
+  ungroup() %>% 
+  select(sample_component, node, x, y, z, any_of(plot_markers)) %>% 
+  pivot_longer(cols = any_of(plot_markers), 
+               names_to = "marker", 
+               values_to = "value") %>%
+  mutate(value = ifelse(value < 0, 0, value),
+         value = ifelse(value > 1, 1, value),
+         marker = factor(marker, plot_markers)) %>% 
+  ggplot(aes(x = x, y = y, z = z, color = value)) +
+  ggrastr::geom_point_rast(size = 0.1, raster.dpi = 300) +
+  facet_grid(sample_component ~ marker) +
+  scale_color_gradientn(colors = cherry_gradient(100)) +
+  coord_fixed() +
+  theme_void()
+  
+ggsave(
+  filename = paste0(params$save_folder, "example_components_3d_counts.pdf"),
+  plot = plot,
+  width = 36,
+  height = 12
+)
+```
+
+### Proximity analysis
+
+```{r proximity_analysis, echo = FALSE, include = FALSE}
+
+
+background_threshold <- median(pg_data_processed$isotype_fraction) + 2 * mad(pg_data_processed$isotype_fraction)
+
+proximity_scores <- 
+  ProximityScores(
+    pg_data_processed, 
+    add_marker_counts = TRUE, 
+    add_marker_proportions = TRUE, 
+    # Add additional group columns if desired
+    meta_data_columns = c("sample_alias", "condition", "donor")
+  ) %>%
+  pixelatorRinternal::FilterProximityScores(background_threshold_pct = background_threshold) %>% 
+  mutate(cell_type = case_when(
+    component %in% CD4T_cells ~ "CD4T",
+    component %in% CD8T_cells ~ "CD8T",
+    component %in% B_cells ~ "B",
+    TRUE ~ "Other"
+  )) %>% 
+  filter(cell_type != "Other") 
+
+proximity_summarized <- 
+  proximity_scores %>%
+  # Use group variables to summarize the proximity scores by selected groups
+  pixelatorRinternal::SummarizeProximityScores(group_vars = c("sample_alias", "cell_type", "condition", "donor"))
+
+proximity_summarized_cross_donor <- 
+  proximity_scores %>%
+  # Use group variables to summarize the proximity scores by selected groups
+  pixelatorRinternal::SummarizeProximityScores(group_vars = c("cell_type", "condition"))
+
+pg_data_prox <- 
+  pg_data_processed %>% 
+  subset(cells = unique(proximity_scores$component))
+
+proximity_scores_wide <- 
+  proximity_scores %>% 
+  ProximityScoresToAssay(values_from = "log2_ratio", missing_obs = 0)
+
+proximity_scores_wide <- proximity_scores_wide[, colnames(pg_data_prox)]
+
+# Create a proximity assay
+pg_data_prox[["proximity"]] <- CreateAssay5Object(data = proximity_scores_wide)
+DefaultAssay(pg_data_prox) <- "proximity"
+
+dp_results <- 
+  list(CD4T = CD4T_cells, 
+       CD8T = CD8T_cells, 
+       B = B_cells) %>% 
+  lapply(function(cell_subset) {
+    pg_data_prox %>%
+      subset(cells = cell_subset) %>% 
+      FindMarkers(
+        ident.1 = "PHA PBMCs",
+        ident.2 = "Resting PBMCs",
+        group.by = "condition",
+        latent.vars = "donor",
+        test.use = "MAST",
+        logfc.threshold = 0,
+        mean.fxn = function(x) apply(x, 1, mean),
+        fc.name = "diff_mean"
+      ) %>% 
+      as_tibble(rownames = "marker")
+  }) %>% 
+  bind_rows(.id = "cell_type") %>% 
+  mutate(p_val_adj = p.adjust(p_val, method = "bonferroni"))
+  
+
+
+dp_results %>% 
+  rowwise() %>% 
+  mutate(label = str_split(marker, "/")[[1]] %>% 
+           unique() %>% 
+           paste(collapse = "/")) %>%
+  ggplot(aes(diff_mean, -log10(p_val_adj))) +
+  geom_hline(yintercept = 0, color = "gray") +
+  geom_point(size = 0.1) +
+  geom_text(aes(label = ifelse(p_val_adj < 0.05 & abs(diff_mean) > 0.5, label, "")),
+            size = 2,
+            vjust = 0) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "#E05573") +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "#E05573") +
+  scale_x_continuous(limits = c(-3, 3)) +
+  facet_wrap(~cell_type, scales = "free") +
+  theme_bw()
+ggsave(
+  filename = paste0(params$save_folder, "prox_analysis_volcano.pdf"),
+
+  width = 9,
+  height = 5
+)
+
+dp_results %>% 
+  group_by(marker) %>% 
+  filter(any(abs(diff_mean) > 1 & p_val_adj < 0.05)) %>% 
+  select(marker, cell_type, diff_mean) %>% 
+  pivot_wider(names_from = cell_type, values_from = diff_mean) %>% 
+  
+  rowwise() %>% 
+  mutate(marker = str_split(marker, "/")[[1]] %>% 
+           unique() %>% 
+           paste(collapse = "/")) %>%
+  column_to_rownames("marker") %>%
+  ComplexHeatmap::pheatmap(
+    color = heatmap_gradient(100),
+    breaks = seq(-3, 3, length.out = 101),
+    heatmap_legend_param = list(title = "Log2FC"),
+    cellwidth = 8, 
+    cellheight = 8
+  ) %>% 
+  as.ggplot()
+
+ggsave(
+  filename = paste0(params$save_folder, "prox_analysis_heatmap.pdf"),
+  
+  width = 8,
+  height = 12
+)
+
+
+plots <- 
+  proximity_summarized %>% 
+  group_by(cell_type) %>% 
+  group_split() %>% 
+  lapply(function(g_data) {
+    
+    g_data %>% 
+      select(sample_alias, marker_1, marker_2, mean_log2_ratio) %>%
+      group_by(marker_1, marker_2) %>% 
+      filter(any(abs(mean_log2_ratio) > 1)) %>% 
+      
+      unite(contrast, marker_1, marker_2, sep = "/") %>%
+      rowwise() %>%
+      mutate(contrast = str_split(contrast, "/")[[1]] %>% 
+               unique() %>% 
+               paste(collapse = "/")) %>%
+      pivot_wider(names_from = sample_alias, values_from = mean_log2_ratio, values_fill = 0) %>% 
+      column_to_rownames("contrast") %>%
+      ComplexHeatmap::pheatmap(
+        color = heatmap_gradient(100),
+        breaks = seq(-3, 3, length.out = 101),
+        main = unique(g_data$cell_type),
+        heatmap_legend_param = list(title = "Median log2 ratio"),
+        cellwidth = 8, 
+        cellheight = 8
+      ) %>% 
+      as.ggplot()
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_heatmap_per_cell_type.pdf"),
+  width = 8,
+  height = 12
+)  
+plots
+dev.off()
+
+plot_data <- 
+  proximity_summarized %>% 
+  filter(mean_log2_ratio > 0.75) %>% 
+  select(marker_1, marker_2, mean_log2_ratio, everything()) 
+
+smac_proteins <- 
+  c("CD3e",
+    "TCRab",
+    "HLA-DR",
+    "HLA-ABC",
+    "CD152",
+    "CD279",
+    "CD80",
+    "CD86",
+    "CD274",
+    "CD2",
+    "CD48", 
+    "CD58",
+    "CD11a",
+    "CD18",
+    "CD54", 
+    "CD45", 
+    "CD44",
+    "CD43")
+
+plots <- 
+  plot_data %>% 
+  group_by(cell_type) %>% 
+  group_split() %>%
+  lapply(function(cell_subset) {
+    cell_subset %>% 
+      as_tbl_graph() %>% 
+      mutate(is_smac = ifelse(name %in% smac_proteins, "bold", "plain"),
+             comp = group_components()) %>% 
+      group_by(comp) %>% 
+      mutate(n = n_distinct(name)) %>% 
+      filter(n>1) %>% 
+      ggraph(layout = "kk") +
+      geom_edge_link(aes(color = mean_log2_ratio),
+                     width = 1) +
+      geom_node_point(size = 0.1) +
+      geom_node_text(aes(label = name, fontface = is_smac)) +
+      scale_edge_color_gradientn(colors = cherry_light_gradient(100),
+                                 limits = c(0, max(plot_data$mean_log2_ratio)),
+                                 name = "Log2 ratio") +
+      facet_grid(donor ~ condition) +
+      coord_fixed() +
+      theme_void() +
+      theme(strip.background = element_rect(fill = "gray80"),
+            strip.text = element_text(color = "black", size = 10)) +
+      labs(title = unique(cell_subset$cell_type),
+           subtitle = "Proximity scores - log2 ratio > 0.75") 
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_network_per_cell_type.pdf"),
+  width = 8,
+  height = 12
+)
+plots
+dev.off()
+
+dp_results %>% 
+  filter(diff_mean > 0.5) %>% 
+  mutate(diff_mean = ifelse(diff_mean > 1, 1, diff_mean)) %>% 
+  separate(marker, into = c("marker_1", "marker_2"), sep = "/") %>%
+  select(marker_1, marker_2, everything()) %>% 
+  as_tbl_graph() %>%
+  mutate(is_smac = ifelse(name %in% smac_proteins, "bold", "plain"),
+             comp = group_components()) %>% 
+  group_by(comp) %>% 
+      mutate(n = n_distinct(name)) %>% 
+      filter(n>1) %>% 
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(color = diff_mean),
+                 width = 0.6) +
+  geom_node_point(size = 0.1) +
+  geom_node_text(aes(label = name, fontface = is_smac, color = is_smac),
+                 size = 2) +
+  scale_edge_color_gradientn(colors = cherry_light_gradient(100),
+                             limits = c(0, 1),
+                             name = "Difference in mean\nLog2 ratio") +
+  scale_color_manual(values = c("bold" = "black", "plain" = "gray30")) +
+  facet_grid( ~ cell_type) +
+  coord_fixed() +
+  theme_void() +
+  theme(strip.background = element_rect(fill = "gray80"),
+        strip.text = element_text(color = "black", size = 10)) 
+ggsave(
+  filename = paste0(params$save_folder, "prox_analysis_network.pdf"),
+  width = 12,
+  height = 7
+)
+
+
+dp_results %>% 
+  filter(diff_mean > 0.5) %>% 
+  mutate(diff_mean = ifelse(diff_mean > 1, 1, diff_mean)) %>% 
+  separate(marker, into = c("marker_1", "marker_2"), sep = "/") %>%
+  select(marker_1, marker_2, everything()) %>% 
+  as_tbl_graph() %>%
+  mutate(is_smac = ifelse(name %in% smac_proteins, "smac", "other"),
+             comp = group_components()) %>% 
+  group_by(comp) %>% 
+      mutate(n = n_distinct(name)) %>% 
+      filter(n>1) %>% 
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(color = diff_mean),
+                 width = 0.6) +
+  geom_node_point(size = 0.1) +
+  geom_node_label(aes(label = name, fill = is_smac),
+                 size = 2) +
+  scale_edge_color_gradientn(colors = cherry_light_gradient(100),
+                             limits = c(0, 1),
+                             name = "Difference in mean\nLog2 ratio") +
+  scale_fill_manual(values = c("smac" = "orange", "other" = "gray90")) +
+  facet_grid( ~ cell_type) +
+  coord_fixed() +
+  theme_void() +
+  theme(strip.background = element_rect(fill = "gray80"),
+        strip.text = element_text(color = "black", size = 10)) 
+ggsave(
+  filename = paste0(params$save_folder, "prox_analysis_network_label.pdf"),
+  width = 15,
+  height = 7
+)
+
+remove_point_stroke <- 
+  function(p) {
+    p <- ggplot_build(p)
+    p$data[[1]]$stroke <- NA
+    p <- ggplot_gtable(p)
+    p$grobs[[6]]$children[[1]]$children[[2]]$x <- unit(0, "npc")
+    p$grobs[[6]]$children[[1]]$children[[3]]$x <- unit(0, "npc")
+    return(p)
+  }
+
+plots <- 
+  proximity_summarized_cross_donor %>% 
+  group_by(cell_type) %>% 
+  group_split() %>%
+  lapply(function(cell_subset) {
+    
+    plot_data <- 
+      cell_subset %>% 
+      group_by(marker_1, marker_2) %>% 
+      filter(any(pct_detected > 0.5)) %>%
+      ungroup() %>% 
+      select(condition, marker_1, marker_2, pct_detected, mean_log2_ratio)
+      # group_by(condition, marker_1, marker_2) %>% 
+      # summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # ungroup()
+    
+    plot_markers <- 
+      plot_data %>% 
+      filter(mean_log2_ratio > 0.25) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+    
+    plot_data <- 
+      plot_data %>% 
+      filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers)
+    
+    plot_data_stim <- 
+      plot_data %>% 
+      filter(condition == "PHA PBMCs") %>% 
+      select(-condition)
+    
+    plot_data_resting <- 
+      plot_data %>% 
+      filter(condition == "Resting PBMCs") %>% 
+      select(-condition)
+    
+    mrkr_clust <- 
+      plot_data_stim %>%
+      select(-pct_detected) %>% 
+      bind_rows(select(., 
+                       marker_1 = marker_2, 
+                       marker_2 = marker_1, 
+                       mean_log2_ratio)) %>% 
+      distinct() %>% 
+      # mutate(mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio)) %>% 
+      pivot_wider(names_from = marker_2, values_from = mean_log2_ratio, values_fill = 0) %>%
+      column_to_rownames("marker_1") %>%
+      cor() %>% 
+      {1 - .} %>% 
+      as.dist() %>% 
+      hclust(method = "ward.D2")
+    
+    plot_order <- (with(mrkr_clust, labels[order]))
+    
+    p1 <- 
+      plot_data_stim %>%
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type))) 
+    
+    
+    
+    
+    
+    p2 <- 
+      plot_data_resting %>%
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)))
+
+    
+    p2 | p1
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_heatmap_per_cell_type_stim_resting.pdf"),
+  width = 24,
+  height = 12
+)
+plots
+dev.off()
+
+significant_markers <- 
+  dp_results %>% 
+  filter(p_val_adj < 0.001) %>% 
+  select(cell_type, marker) %>% 
+  distinct() %>% 
+  separate(marker, into = c("marker_1", "marker_2"), sep = "/") 
+  
+plots <- 
+  proximity_summarized_cross_donor %>% 
+  group_by(cell_type) %>% 
+  group_split() %>%
+  lapply(function(cell_subset) {
+    
+    plot_data <- 
+      cell_subset %>% 
+      inner_join(significant_markers) %>% 
+      group_by(marker_1, marker_2) %>% 
+      filter(any(pct_detected > 0.5)) %>%
+      ungroup() %>% 
+      select(condition, marker_1, marker_2, pct_detected, mean_log2_ratio)
+      # group_by(condition, marker_1, marker_2) %>% 
+      # summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # ungroup()
+    
+    plot_markers <- 
+      plot_data %>% 
+      filter(mean_log2_ratio > 0.25) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+    
+    plot_data <- 
+      plot_data %>% 
+      filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers)
+    
+    plot_data_stim <- 
+      plot_data %>% 
+      filter(condition == "PHA PBMCs") %>% 
+      select(-condition)
+    
+    plot_data_resting <- 
+      plot_data %>% 
+      filter(condition == "Resting PBMCs") %>% 
+      select(-condition)
+    
+    mrkr_clust <- 
+      plot_data_stim %>%
+      select(-pct_detected) %>% 
+      bind_rows(select(., 
+                       marker_1 = marker_2, 
+                       marker_2 = marker_1, 
+                       mean_log2_ratio)) %>% 
+      distinct() %>% 
+      # mutate(mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio)) %>% 
+      pivot_wider(names_from = marker_2, values_from = mean_log2_ratio, values_fill = 0) %>%
+      column_to_rownames("marker_1") %>%
+      cor() %>% 
+      {1 - .} %>% 
+      as.dist() %>% 
+      hclust(method = "ward.D2")
+    
+    plot_order <- (with(mrkr_clust, labels[order]))
+    
+    p1 <- 
+      plot_data_stim %>%
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type))) 
+    
+    
+    
+    
+    
+    p2 <- 
+      plot_data_resting %>%
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)))
+
+    
+    p2 | p1
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_heatmap_per_cell_type_stim_resting_sign.pdf"),
+  width = 24,
+  height = 12
+)
+plots
+dev.off()
+
+
+plots <- 
+  proximity_summarized_cross_donor %>% 
+  group_by(cell_type) %>% 
+  group_split() %>%
+  lapply(function(cell_subset) {
+    
+    mrkr_subset <- 
+      significant_markers %>% 
+      filter(cell_type == unique(cell_subset$cell_type)) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+      
+      
+    plot_data <- 
+      cell_subset %>% 
+      filter(marker_1 %in% mrkr_subset & marker_2 %in% mrkr_subset) %>%
+      group_by(marker_1, marker_2) %>% 
+      filter(any(pct_detected > 0.5)) %>%
+      ungroup() %>% 
+      select(condition, marker_1, marker_2, pct_detected, mean_log2_ratio)
+      # group_by(condition, marker_1, marker_2) %>% 
+      # summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # ungroup()
+    
+    plot_markers <- 
+      plot_data %>% 
+      filter(mean_log2_ratio > 0.25) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+    
+    plot_data <- 
+      plot_data %>% 
+      filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers)
+    
+    plot_data_stim <- 
+      plot_data %>% 
+      filter(condition == "PHA PBMCs") %>% 
+      select(-condition)
+    
+    plot_data_resting <- 
+      plot_data %>% 
+      filter(condition == "Resting PBMCs") %>% 
+      select(-condition)
+    
+    mrkr_clust <- 
+      plot_data_stim %>%
+      select(-pct_detected) %>% 
+      bind_rows(select(., 
+                       marker_1 = marker_2, 
+                       marker_2 = marker_1, 
+                       mean_log2_ratio)) %>% 
+      distinct() %>% 
+      # mutate(mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio)) %>% 
+      pivot_wider(names_from = marker_2, values_from = mean_log2_ratio, values_fill = 0) %>%
+      column_to_rownames("marker_1") %>%
+      cor() %>% 
+      {1 - .} %>% 
+      as.dist() %>% 
+      hclust(method = "ward.D2")
+    
+    plot_order <- (with(mrkr_clust, labels[order]))
+    
+    p1 <- 
+      plot_data_stim %>%
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type))) 
+    
+    
+    
+    
+    
+    p2 <- 
+      plot_data_resting %>%
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)))
+
+    
+    p2 | p1
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_heatmap_per_cell_type_stim_resting_sign_allpoints.pdf"),
+  width = 24,
+  height = 12
+)
+plots
+dev.off()
+
+
+
+plots <- 
+  proximity_summarized %>% 
+  group_by(cell_type) %>% 
+  group_split() %>%
+  lapply(function(cell_subset) {
+    
+    mrkr_subset <- 
+      significant_markers %>% 
+      filter(cell_type == unique(cell_subset$cell_type)) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+      
+      
+    plot_data <- 
+      cell_subset %>% 
+      filter(marker_1 %in% mrkr_subset & marker_2 %in% mrkr_subset) %>%
+      group_by(marker_1, marker_2) %>% 
+      filter(any(pct_detected > 0.5)) %>%
+      ungroup() %>% 
+      select(donor, condition, marker_1, marker_2, pct_detected, mean_log2_ratio)
+      # group_by(condition, marker_1, marker_2) %>% 
+      # summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # ungroup()
+    
+    plot_markers <- 
+      plot_data %>% 
+      filter(mean_log2_ratio > 0.25) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+    
+    plot_data <- 
+      plot_data %>% 
+      filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers)
+    
+    plot_data_stim <- 
+      plot_data %>% 
+      filter(condition == "PHA PBMCs") %>% 
+      select(-condition)
+    
+    plot_data_resting <- 
+      plot_data %>% 
+      filter(condition == "Resting PBMCs") %>% 
+      select(-condition)
+    
+    mrkr_clust <- 
+      plot_data_stim %>%
+      select(-pct_detected) %>% 
+      bind_rows(select(., 
+                       donor,
+                       marker_1 = marker_2, 
+                       marker_2 = marker_1, 
+                       mean_log2_ratio)) %>% 
+      distinct() %>% 
+      group_by(marker_1, marker_2) %>% 
+      summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # mutate(mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio)) %>% 
+      pivot_wider(names_from = marker_2, values_from = mean_log2_ratio, values_fill = 0) %>%
+      column_to_rownames("marker_1") %>%
+      cor() %>% 
+      {1 - .} %>% 
+      as.dist() %>% 
+      hclust(method = "ward.D2")
+    
+    plot_order <- (with(mrkr_clust, labels[order]))
+    
+    p1 <- 
+      plot_data_stim %>%
+      filter(donor == "Donor 1") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 1") 
+    
+    
+    
+    
+    
+    p2 <- 
+      plot_data_resting %>%
+      filter(donor == "Donor 1") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 1")
+
+    p3 <- 
+      plot_data_stim %>%
+      filter(donor == "Donor 2") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 2") 
+    
+    
+    
+    
+    
+    p4 <- 
+      plot_data_resting %>%
+      filter(donor == "Donor 2") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range = c(-0.5, 0.5)
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 2")
+    
+    (p2 | p1) / (p4 | p3)
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_heatmap_per_cell_type_stim_resting_sign_allpoints_donor.pdf"),
+  width = 24,
+  height = 24
+)
+plots
+dev.off()
+
+
+
+
+
+dp_results %>% 
+  filter(p_val_adj < 0.001) %>% 
+  select(cell_type, marker) %>% 
+  distinct() %>% 
+  separate(marker, into = c("marker_1", "marker_2"), sep = "/") %>% 
+  filter(marker_1 == marker_2) %>% 
+  group_by(marker_1) %>% 
+  left_join(proximity_summarized) %>% 
+  # filter(any(abs(mean_log2_ratio) > 01)) %>% 
+  select(marker = marker_1, mean_log2_ratio, condition, donor, cell_type) %>%
+  pivot_wider(names_from = condition, values_from = mean_log2_ratio) %>%
+  ggplot(aes(`Resting PBMCs`, `PHA PBMCs`)) +
+  geom_abline() +
+  geom_point(size = 0.1) +
+  geom_text(aes(label = marker),
+            size = 2,
+            vjust = 0,
+            hjust = 0) +
+  facet_grid(donor ~ cell_type) +
+  scale_x_continuous(limits = c(0, 4)) +
+  scale_y_continuous(limits = c(0, 4)) +
+  coord_fixed() +
+  theme_bw() +
+  labs(x = "Resting PBMCs - mean log2 ratio",
+       y = "PHA PBMCs - mean log2 ratio",
+       title = "Proximity scores - resting vs PHA stimulated PBMCs") 
+ggsave(
+  filename = paste0(params$save_folder, "prox_analysis_resting_vs_stimulated_means.pdf"),
+  
+  width = 6,
+  height = 4
+)
+  
+  
+
+```
+
+#### Selected markers
+
+##### GPI
+
+```{r prox_selected, echo = FALSE, include = FALSE}
+
+mrkr_subset <- 
+  c("CD52", "CD59", "CD58", "CD47", "CD48", "CD55", "CD50", "CD2", "CD5", "CD3e")
+leg_range <- c(-1, 1) 
+
+plots <- 
+  proximity_summarized %>% 
+  group_by(cell_type) %>% 
+  group_split() %>%
+  lapply(function(cell_subset) {
+    
+    
+      
+      
+    plot_data <- 
+      cell_subset %>% 
+      filter(marker_1 %in% mrkr_subset & marker_2 %in% mrkr_subset) %>%
+      group_by(marker_1, marker_2) %>% 
+      filter(any(pct_detected > 0.5)) %>%
+      ungroup() %>% 
+      select(donor, condition, marker_1, marker_2, pct_detected, mean_log2_ratio)
+      # group_by(condition, marker_1, marker_2) %>% 
+      # summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # ungroup()
+    
+    plot_markers <- 
+      plot_data %>% 
+      filter(mean_log2_ratio > 0.25) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+    
+    plot_data <- 
+      plot_data %>% 
+      filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers)
+    
+    plot_data_stim <- 
+      plot_data %>% 
+      filter(condition == "PHA PBMCs") %>% 
+      select(-condition)
+    
+    plot_data_resting <- 
+      plot_data %>% 
+      filter(condition == "Resting PBMCs") %>% 
+      select(-condition)
+    
+    mrkr_clust <- 
+      plot_data_stim %>%
+      select(-pct_detected) %>% 
+      bind_rows(select(., 
+                       donor,
+                       marker_1 = marker_2, 
+                       marker_2 = marker_1, 
+                       mean_log2_ratio)) %>% 
+      distinct() %>% 
+      group_by(marker_1, marker_2) %>% 
+      summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # mutate(mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio)) %>% 
+      pivot_wider(names_from = marker_2, values_from = mean_log2_ratio, values_fill = 0) %>%
+      column_to_rownames("marker_1") %>%
+      cor() %>% 
+      {1 - .} %>% 
+      as.dist() %>% 
+      hclust(method = "ward.D2")
+    
+    plot_order <- (with(mrkr_clust, labels[order]))
+    
+    p1 <- 
+      plot_data_stim %>%
+      filter(donor == "Donor 1") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 1") 
+    
+    
+    
+    
+    
+    p2 <- 
+      plot_data_resting %>%
+      filter(donor == "Donor 1") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 1")
+
+    p3 <- 
+      plot_data_stim %>%
+      filter(donor == "Donor 2") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 2") 
+    
+    
+    
+    
+    
+    p4 <- 
+      plot_data_resting %>%
+      filter(donor == "Donor 2") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 2")
+    
+    (p2 | p1) / (p4 | p3)
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_heatmap_per_cell_type_stim_resting_sign_allpoints_donor_selected_gpi.pdf"),
+  width = 8,
+  height = 8
+)
+plots
+dev.off()
+
+```
+
+##### tetraspanin
+
+```{r prox_tetra, echo = FALSE, include = FALSE}
+
+mrkr_subset <- 
+  c("CD37", "CD81", "CD82", "CD53", "CD156c", "CD2", "CD3e", "CD5", "CD6", "CD7", "CD162", "CD49D")
+
+leg_range <- c(-1, 1) 
+
+plots <- 
+  proximity_summarized %>% 
+  group_by(cell_type) %>% 
+  group_split() %>%
+  lapply(function(cell_subset) {
+    
+    
+      
+      
+    plot_data <- 
+      cell_subset %>% 
+      filter(marker_1 %in% mrkr_subset & marker_2 %in% mrkr_subset) %>%
+      group_by(marker_1, marker_2) %>% 
+      filter(any(pct_detected > 0.5)) %>%
+      ungroup() %>% 
+      select(donor, condition, marker_1, marker_2, pct_detected, mean_log2_ratio)
+      # group_by(condition, marker_1, marker_2) %>% 
+      # summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # ungroup()
+    
+    plot_markers <- 
+      plot_data %>% 
+      filter(mean_log2_ratio > 0.25) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+    
+    plot_data <- 
+      plot_data %>% 
+      filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers)
+    
+    plot_data_stim <- 
+      plot_data %>% 
+      filter(condition == "PHA PBMCs") %>% 
+      select(-condition)
+    
+    plot_data_resting <- 
+      plot_data %>% 
+      filter(condition == "Resting PBMCs") %>% 
+      select(-condition)
+    
+    mrkr_clust <- 
+      plot_data_stim %>%
+      select(-pct_detected) %>% 
+      bind_rows(select(., 
+                       donor,
+                       marker_1 = marker_2, 
+                       marker_2 = marker_1, 
+                       mean_log2_ratio)) %>% 
+      distinct() %>% 
+      group_by(marker_1, marker_2) %>% 
+      summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # mutate(mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio)) %>% 
+      pivot_wider(names_from = marker_2, values_from = mean_log2_ratio, values_fill = 0) %>%
+      column_to_rownames("marker_1") %>%
+      cor() %>% 
+      {1 - .} %>% 
+      as.dist() %>% 
+      hclust(method = "ward.D2")
+    
+    plot_order <- (with(mrkr_clust, labels[order]))
+    
+    p1 <- 
+      plot_data_stim %>%
+      filter(donor == "Donor 1") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 1") 
+    
+    
+    
+    
+    
+    p2 <- 
+      plot_data_resting %>%
+      filter(donor == "Donor 1") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 1")
+
+    p3 <- 
+      plot_data_stim %>%
+      filter(donor == "Donor 2") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 2") 
+    
+    
+    
+    
+    
+    p4 <- 
+      plot_data_resting %>%
+      filter(donor == "Donor 2") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 2")
+    
+    (p2 | p1) / (p4 | p3)
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_heatmap_per_cell_type_stim_resting_sign_allpoints_donor_selected_tetra.pdf"),
+  width = 8,
+  height = 8
+)
+plots
+dev.off()
+
+```
+
+
+
+
+##### T markers
+
+```{r prox_tetra, echo = FALSE, include = FALSE}
+T_markers <- 
+  pg_data_processed %>%
+  GetAssay("PNA") %>% 
+  FindMarkers(
+    cells.1 = T_cells[which(!T_cells %in% B_cells)],
+    cells.2 = B_cells[which(!B_cells %in% T_cells)],
+    test.use = "wilcox",
+    logfc.threshold = 0.25,
+    min.pct = 0.1,
+    return.thresh = 0.001
+  ) %>% 
+  as_tibble(rownames = "marker")
+
+
+T_markers %>% 
+  filter(avg_log2FC > 1) %>% 
+  pull(marker) %>% 
+  dput
+
+mrkr_subset <- 
+  # c("CD3e", "CD6", "CD162", "CD2", "CD5", "TCRab", "CD49e", 
+  #   "CD7", "TCRva7.2", "CD18", "CD127", "CD11a", "CD28", "CD45RO", 
+  #   "CD226", "CD44", "CD26", "CD59", "CD27", "CD4", "CD29", "KLRG1", 
+  #   "CD277", "CD45RB", "CD244", "CD314", "CD279", "CD366", "CD95", 
+  #   "CD8", "TIGIT", "CD94", "CD161", "CD278", "GPR56", "CD103", "CD357", 
+  #   "CD56", "CD159a", "TCRgd", "CD328", "NKp80", "CD137", "CD134", 
+  #   "CD158a", "CD25", "TCRVd2", "CD158", "CD38", "TCRVB5")
+  c("CD3e", "CD5", "CD6", "CD7", "CD50", "CD352")
+  
+leg_range <- c(-1, 1) * 0.5 
+
+plots <- 
+  proximity_summarized %>% 
+  group_by(cell_type) %>% 
+  group_split() %>%
+  lapply(function(cell_subset) {
+    
+    
+      
+      
+    plot_data <- 
+      cell_subset %>% 
+      filter(marker_1 %in% mrkr_subset & marker_2 %in% mrkr_subset) %>%
+      group_by(marker_1, marker_2) %>% 
+      filter(any(pct_detected > 0.5)) %>%
+      ungroup() %>% 
+      select(donor, condition, marker_1, marker_2, pct_detected, mean_log2_ratio)
+      # group_by(condition, marker_1, marker_2) %>% 
+      # summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # ungroup()
+    
+    plot_markers <- 
+      plot_data %>% 
+      # filter(mean_log2_ratio > 0.25) %>% 
+      select(marker_1, marker_2) %>% 
+      unlist() %>% 
+      unique()
+    
+    plot_data <- 
+      plot_data %>% 
+      filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers)
+    
+    plot_data_stim <- 
+      plot_data %>% 
+      filter(condition == "PHA PBMCs") %>% 
+      select(-condition)
+    
+    plot_data_resting <- 
+      plot_data %>% 
+      filter(condition == "Resting PBMCs") %>% 
+      select(-condition)
+    
+    mrkr_clust <- 
+      plot_data_stim %>%
+      select(-pct_detected) %>% 
+      bind_rows(select(., 
+                       donor,
+                       marker_1 = marker_2, 
+                       marker_2 = marker_1, 
+                       mean_log2_ratio)) %>% 
+      distinct() %>% 
+      group_by(marker_1, marker_2) %>% 
+      summarise(mean_log2_ratio = mean(mean_log2_ratio)) %>% 
+      # mutate(mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio)) %>% 
+      pivot_wider(names_from = marker_2, values_from = mean_log2_ratio, values_fill = 0) %>%
+      column_to_rownames("marker_1") %>%
+      cor() %>% 
+      {1 - .} %>% 
+      as.dist() %>% 
+      hclust(method = "ward.D2")
+    
+    plot_order <- (with(mrkr_clust, labels[order]))
+    
+    p1 <- 
+      plot_data_stim %>%
+      filter(donor == "Donor 1") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 1") 
+    
+    
+    
+    
+    
+    p2 <- 
+      plot_data_resting %>%
+      filter(donor == "Donor 1") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 1")
+
+    p3 <- 
+      plot_data_stim %>%
+      filter(donor == "Donor 2") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("PHA PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 2") 
+    
+    
+    
+    
+    
+    p4 <- 
+      plot_data_resting %>%
+      filter(donor == "Donor 2") %>% 
+      mutate(marker_1 = factor(marker_1, levels = plot_order),
+             marker_2 = factor(marker_2, levels = plot_order),
+             temp = 1) %>% 
+      ColocalizationHeatmap(
+        marker1_col = "marker_1",
+        marker2_col = "marker_2",
+        value_col = "mean_log2_ratio",
+        size_col = "pct_detected",
+        cluster_rows = F,
+        cluster_cols = F,
+        colors = heatmap_gradient(100),
+        # size_col_transform = \(x) -log10(x),
+        type = "dots",
+        size_range = c(2, 5),
+        legend_range  = leg_range
+      ) + 
+      scale_size_continuous(range = c(0, 5), limits = 0:1) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0)) +
+      labs(title = paste0("Resting PBMCs - ", unique(cell_subset$cell_type)),
+           subtitle = "Donor 2")
+    
+    (p2 | p1) / (p4 | p3)
+  })
+
+pdf(
+  file = paste0(params$save_folder, "prox_analysis_heatmap_per_cell_type_stim_resting_sign_allpoints_donor_selected_T.pdf"),
+  width = 7,
+  height = 7
+)
+plots
+dev.off()
+
+
+
+
+```
+
+
+##### CD274
+
+```{r prox_cd274, echo = FALSE, include = FALSE}
+
+mrkr_subset <- 
+  c("CD274", "CD80", "CD86", "CD40", "CD32", "CD28", "CD152", "CD155")
+
+plot_data <- 
+  proximity_summarized %>% 
+  filter(cell_type == "CD4T") %>% 
+  group_by(marker_1, marker_2) %>% 
+  filter(any(mean_log2_ratio > 0.2)) %>% 
+  select(marker_1, marker_2, everything()) 
+
+plot_markers <- 
+  plot_data %>% 
+  filter(marker_1 == "CD274" | marker_2 == "CD274") %>% 
+  select(marker_1, marker_2) %>% 
+  unlist() %>% 
+  unique()
+
+plot_data <- 
+  plot_data %>% 
+  ungroup() %>% 
+  filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers) %>%
+  mutate(condition = factor(condition, levels = c("Resting PBMCs", "PHA PBMCs")),
+         mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio),
+         mean_log2_ratio = ifelse(mean_log2_ratio > 3, 3, mean_log2_ratio)) 
+
+plot_graph <- 
+  plot_data %>%
+  mutate(marker_1 = paste(marker_1, sample_alias, sep = "_"),
+         marker_2 = paste(marker_2, sample_alias, sep = "_")) %>%
+
+    as_tbl_graph() %>% 
+  mutate(sample_alias = str_remove(name, ".*_"),
+         name = str_remove(name, "_.*")) %>%
+  left_join(plot_data %>%
+              filter(marker_1 == marker_2) %>% 
+              select(name = marker_1, sample_alias, pct_detected, mean_log2_ratio, donor, condition))
+
+temp <- 
+  plot_graph %>% 
+  as_tibble()  
+
+temp_ds_vs <- which(temp$sample_alias == temp$sample_alias[1])
+  
+layt <- 
+  plot_graph %>% 
+  igraph::layout.fruchterman.reingold() %>% 
+  {.[temp_ds_vs,]}
+  
+layt_new <- 
+  temp %>% 
+  select(name) %>% 
+  left_join(layt %>% 
+              as_tibble %>% 
+              mutate(name = temp$name[temp_ds_vs])) %>% 
+  select(-name) %>% 
+  as.matrix()
+
+plot_graph %>% 
+  activate(edges) %>% 
+  mutate(condition = factor(condition, levels = (c("Resting PBMCs", "PHA PBMCs")))) %>% 
+  activate(nodes) %>% 
+  mutate(condition = factor(condition, levels = (c("Resting PBMCs", "PHA PBMCs")))) %>% 
+  ggraph(layout = layt_new) +
+  geom_edge_link(aes(edge_width = pct_detected, 
+                     color = mean_log2_ratio)) +
+  geom_node_point(aes(size = pct_detected , color = mean_log2_ratio)) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+  facet_grid(donor ~ condition) +
+  scale_edge_color_gradientn(colors = cherry_gradient(100), limits = c(0, 3)) +
+  scale_color_gradientn(colors = cherry_gradient(100), limits = c(0, 3)) +
+  scale_size_continuous(range = c(0, 4), limits = c(0, 1)) +
+  scale_edge_width_continuous(range = c(0, 4), limits = c(0, 1)) +
+  coord_fixed() +
+  labs(title = "Colocalization of CD274 with other markers",
+       subtitle = "PHA PBMCs") +
+  theme_bw() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        panel.border = element_blank())
+
+```
+
+
+# Vincent
+
+```{r vincent, echo = FALSE, include = FALSE}
+
+
+
+# 2. Select markers with high z-score
+sel_markers <- prox_scores_filtered_all |>
+        filter(pct_detected >= pct_cutoff) |>
+        group_by(marker_1) |>
+        summarize(max_log2_ratio = max(abs(mean_log2_ratio)))  |>
+        filter(max_log2_ratio >= 0.2) |>
+        pull(marker_1) |>
+        unique()
+
+# Order of markers for the heatmap with CD21 relocated - determined after running for the first time. Not always necessary!
+new_order <- c("CD82", "CD20", "CD53", "CD81", "CD37", "CD19", "CD21", "CD58", "CD59", 
+"CD52", "CD55", "CD48", "CD79a", "IgM", "CD47", "CD180", "CD319", 
+"CD18", "CD137", "CD11a", "CD268", "CD80", "CD43", "CD102", "CD156c", 
+"CD54", "CD49D", "CD45RA", "CD45RB", "CD45", "CD40", 
+"CD32", "CD70", "CD86", "B2M", "CD352", "CD29", "CD72", "CD22", 
+"CD71", "CD150", "HLA-DR-DP-DQ", "HLA-ABC", "HLA-DR", "HLA-DQ"
+)
+
+# Select markers with high percentage of cells detected
+(hm1 <- ColocalizationHeatmap(
+    prox_scores_filtered_all |>
+        filter(pct_detected >= pct_cutoff) |>
+        filter(marker_1 %in% sel_markers) |>
+        filter(marker_2 %in% sel_markers) |>
+        mutate(marker_1 = factor(marker_1, levels = new_order),
+               marker_2 = factor(marker_2, levels = new_order)),
+    marker1_col = "marker_1",
+    marker2_col = "marker_2",
+    value_col = "mean_log2_ratio",
+    size_col = "mean_join_count_p",
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    colors = heatmap_gradient(100),
+    size_col_transform = \(x) -log10(x),
+    type = "dots",
+    size_range = c(2, 5),
+    legend_range = c(-0.5, 0.5)
+) + theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0),
+          axis.text.y = element_text(angle = 30, hjust = 1, vjust = 0)) )
+
+p <- ggplot_build(hm1)
+p$data[[1]]$stroke <- NA
+
+q <- ggplot_gtable(p)
+q$grobs[[6]]$children[[1]]$children[[2]]$x <- unit(0, "npc")
+q$grobs[[6]]$children[[1]]$children[[3]]$x <- unit(0, "npc")
+
+
+pdf(here(glue::glue("raji/output/colocalization_heatmap_p_scaled_{pct_cutoff}.pdf")), width = 9, height = 9)
+plot(q)
+dev.off()
+
+```

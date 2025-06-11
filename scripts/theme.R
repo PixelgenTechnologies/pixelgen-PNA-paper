@@ -7,6 +7,11 @@ cherry_gradient <-
   colorRampPalette(
     c("gray90", "#FFE0EA", "#E9AABF", "#CD6F8D", "#A23F5E", "#781534"))
 
+
+cherry_light_gradient <-
+  colorRampPalette(
+    c("white", "#FFE0EA", "#E9AABF", "#CD6F8D", "#A23F5E", "#781534"))
+
 yes_no_palette <-
   c("#DAD6D7", "#C86584")
 

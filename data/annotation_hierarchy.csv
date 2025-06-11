@@ -22,9 +22,7 @@ NK,CD56bright NK,"CD56++, CD159a+"
 NK,CD56dim NK,"CD56+, CD158+"
 NK,Memory NK,"CD159c+, CD57+"
 T,TCRab+,TCRab+
-T,gdT,TCRgd+
-gdT,TCRVd2 gdT,TCRVd2+
-gdT,TCRVg9 gdT,TCRVg9+
+T,gdT,"TCRgd+, TCRVg9+ or TCRVd2+"
 TCRab+,DPT,CD4+. CD8+
 TCRab+,DNT,"CD4-, CD8-"
 TCRab+,MAIT,"TCRva7.2+, CD27+"

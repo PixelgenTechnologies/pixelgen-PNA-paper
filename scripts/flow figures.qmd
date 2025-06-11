@@ -1,0 +1,59 @@
+---
+title: "flow figure"
+format:
+  html:
+    theme: cerulean
+    page-layout: full
+    embed-resources: true
+    code_folding: show
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+  
+---
+
+# 
+
+
+
+```{r load_packages, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(pixelatorR)
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(ggplotify)
+library(tidygraph)
+library(pcaMethods)
+library(pbapply)
+library(ggpubr)
+library(ggrastr)
+source("theme.R")
+source("utility.R")
+```
+
+
+# Plotting
+
+## Proximity and abundance 
+
+```{r load_data, echo = FALSE, message = FALSE, warning = FALSE}
+
+plot_data <- 
+  read_csv("../data/Flow validation.csv")
+
+plot_data %>% 
+  ggplot(aes(`flow %`, `PNA %`)) +
+  geom_abline() +
+  geom_point() +
+  geom_text(data = . %>% 
+              summarise(cor = cor(`flow %`, `PNA %`)),
+            aes(label = paste0("r = ", round(cor, 2))),
+            x = 10, y = 70, size = 4) +
+  theme_bw() +
+  coord_fixed() +
+  scale_x_continuous(limits = c(0, 75)) +
+  scale_y_continuous(limits = c(0, 75)) +
+  labs(x = "Flow %", y = "PNA %") 
+ggsave("../results/flow_plot.pdf", width = 4, height = 3)
+```

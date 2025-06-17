@@ -754,6 +754,11 @@ ggsave(
   height = 5
 )
 
+Monocytes <- 
+  pg_data_processed %>% 
+  subset(subset = CD45 > 3 & CD14 > 1) %>%
+  colnames()
+
 # CD14 vs CD86
 pg_data_processed %>%
   DensityScatterPlot(marker1 = "CD14", marker2 = "CD86", 
@@ -841,7 +846,8 @@ CD8T_cells <-
 da_results <- 
   list(CD4T = CD4T_cells, 
        CD8T = CD8T_cells, 
-       B = B_cells) %>% 
+       B = B_cells,
+       Mono = Monocytes) %>% 
   lapply(function(cell_subset) {
     pg_data_processed %>%
       subset(cells = cell_subset) %>% 
@@ -907,6 +913,7 @@ plot_data <-
     sample_component %in% CD4T_cells ~ "CD4T",
     sample_component %in% CD8T_cells ~ "CD8T",
     sample_component %in% B_cells ~ "B",
+    sample_component %in% Monocytes ~ "Monocytes",
     TRUE ~ "Other"
   )) %>% 
   left_join(FetchData(pg_data_processed, c("sample_alias", "condition", "donor")) %>% 
@@ -2719,6 +2726,114 @@ plot_graph %>%
         panel.border = element_blank())
 
 ```
+
+
+
+##### CD40 - CD40L
+
+```{r prox_cd274, echo = FALSE, include = FALSE}
+
+plot_mrkrs <- c("CD40", "CD154", "CD25")
+plot_data <- 
+  proximity_summarized %>% 
+  filter(marker_1 %in% plot_mrkrs, marker_2 %in% plot_mrkrs) 
+
+plot_data %>% 
+  ggplot(aes(condition, 
+             mean_log2_ratio, 
+             fill = condition, 
+             group = sample_alias)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_col(position = position_dodge()) +
+  facet_grid(cell_type~marker_1 + marker_2) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+plot_data <- 
+  plot_data %>% 
+  ungroup() %>% 
+  filter(marker_1 %in% plot_markers & marker_2 %in% plot_markers) %>%
+  mutate(condition = factor(condition, levels = c("Resting PBMCs", "PHA PBMCs")),
+         mean_log2_ratio = ifelse(mean_log2_ratio < 0, 0, mean_log2_ratio),
+         mean_log2_ratio = ifelse(mean_log2_ratio > 3, 3, mean_log2_ratio)) 
+
+plot_graph <- 
+  plot_data %>%
+  mutate(marker_1 = paste(marker_1, sample_alias, sep = "_"),
+         marker_2 = paste(marker_2, sample_alias, sep = "_")) %>%
+
+    as_tbl_graph() %>% 
+  mutate(sample_alias = str_remove(name, ".*_"),
+         name = str_remove(name, "_.*")) %>%
+  left_join(plot_data %>%
+              filter(marker_1 == marker_2) %>% 
+              select(name = marker_1, sample_alias, pct_detected, mean_log2_ratio, donor, condition))
+
+temp <- 
+  plot_graph %>% 
+  as_tibble()  
+
+temp_ds_vs <- which(temp$sample_alias == temp$sample_alias[1])
+  
+layt <- 
+  plot_graph %>% 
+  igraph::layout.fruchterman.reingold() %>% 
+  {.[temp_ds_vs,]}
+  
+layt_new <- 
+  temp %>% 
+  select(name) %>% 
+  left_join(layt %>% 
+              as_tibble %>% 
+              mutate(name = temp$name[temp_ds_vs])) %>% 
+  select(-name) %>% 
+  as.matrix()
+
+plot_graph %>% 
+  activate(edges) %>% 
+  mutate(condition = factor(condition, levels = (c("Resting PBMCs", "PHA PBMCs")))) %>% 
+  activate(nodes) %>% 
+  mutate(condition = factor(condition, levels = (c("Resting PBMCs", "PHA PBMCs")))) %>% 
+  ggraph(layout = layt_new) +
+  geom_edge_link(aes(edge_width = pct_detected, 
+                     color = mean_log2_ratio)) +
+  geom_node_point(aes(size = pct_detected , color = mean_log2_ratio)) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+  facet_grid(donor ~ condition) +
+  scale_edge_color_gradientn(colors = cherry_gradient(100), limits = c(0, 3)) +
+  scale_color_gradientn(colors = cherry_gradient(100), limits = c(0, 3)) +
+  scale_size_continuous(range = c(0, 4), limits = c(0, 1)) +
+  scale_edge_width_continuous(range = c(0, 4), limits = c(0, 1)) +
+  coord_fixed() +
+  labs(title = "Colocalization of CD274 with other markers",
+       subtitle = "PHA PBMCs") +
+  theme_bw() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        panel.border = element_blank())
+
+```
+
 
 
 # Vincent

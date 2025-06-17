@@ -45,8 +45,14 @@ metadata <-
          sample_alias = c("SLE1", "HC1", "SLE2", "HC2"))
 
 
+B_cells <- 
+  read_csv("../data/BrodinLab_pixelgen_data_forpublication/clustering_distribution_Bcells_CD21_CD72_toPixelgen.csv") %>% 
+  pull(component) %>% 
+  unique()
+
 prox_data <- 
-  read_csv("../data/BrodinLab_pixelgen_data_forpublication/clustering_distribution_Bcells_CD21_CD72_toPixelgen.csv")
+  read_csv("../data/BrodinLab_pixelgen_data_forpublication/cd21_cd72_unfiltered_proximity_scores.csv") %>% 
+  filter(component %in% B_cells)
 
 cells_in_data <- 
   prox_data$component %>% unique()
@@ -144,7 +150,66 @@ LayerData(seur, "data")[c("CD21", "CD72"), ] %>%
   left_join(prox_data %>% 
               filter(marker_1 == marker_2, marker_1 == "CD21") %>% 
               select(marker = marker_1, component, log2_ratio)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, clr)) +
+  geom_point() +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(x = "log2 ratio", y = "CLR",
+       title = "CD21") 
+
+
+
+  
+LayerData(seur, "count")[c("CD21", "CD72"), ] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "count") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD21") %>% 
+  left_join(prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD21") %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, count)) +
+  geom_point() +
+  scale_y_log10() +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(x = "log2 ratio", y = "counts",
+       title = "CD21") 
+  
+
+LayerData(seur, "count")[c("CD21", "CD72"), ] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "count") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD21") %>% 
+  left_join(prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD21") %>% 
+              rename(marker = marker_1)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, min_count)) +
+  geom_point() +
+  # scale_y_log10() +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(title = "CD21") 
+
+prox_data %>% 
+  ggplot(aes(join_count_expected_mean, join_count_z)) +
+  geom_point()
+
+LayerData(seur, "data")[c("CD21", "CD72"), ] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD21") %>% 
+  left_join(prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD21") %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
   pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") %>% 
+  filter(component %in% cells_in_data) %>% 
+  mutate(value = ifelse(is.na(value), 0, value)) %>% 
   ggplot(aes(condition, value, fill = condition)) +
   geom_hline(yintercept = 0) +
   geom_violin(aes(group = sample_alias), 
@@ -171,7 +236,49 @@ LayerData(seur, "data")[c("CD21", "CD72"), ] %>%
   labs(x = NULL, y = "log2 ratio") 
 
 ggsave("../results/Brodin/brodin_abundance_prox_violins.pdf", 
-       width = 4, height = 3)
+       width = 6, height = 3)
+
+
+
+LayerData(seur, "data")[c("CD21", "CD72"), ] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  # filter(marker == "CD21") %>% 
+  left_join(prox_data %>% 
+              filter(marker_1 == marker_2) %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") %>% 
+  filter(component %in% cells_in_data) %>% 
+  mutate(value = ifelse(is.na(value), 0, value)) %>% 
+  ggplot(aes(condition, value, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  # geom_jitter(aes(group = sample_alias), 
+  #             position = position_jitterdodge(dodge.width = 0.85, 
+  #                                             jitter.width = 0.1),
+  #             size = 0.1) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  # geom_point(data = . %>% 
+  #              filter(component %in% c("6b81434111175540", "8a5aa547e333b42c")),
+  #            color = "red", size = 3) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_grid(metric ~ marker, scales = "free") +
+  theme_bw() +
+  labs(x = NULL, y = "value") 
+
+ggsave("../results/Brodin/brodin_abundance_prox_violins_both.pdf", 
+       width = 7, height = 6)
+
 
 ###
 
@@ -191,67 +298,219 @@ seur %>%
 
 ```
 
+
+## auc
+
+```{r auc, echo = FALSE, message = FALSE, warning = FALSE}
+
+library(pROC)
+temp_data <- 
+  LayerData(seur, "data")[c("CD21", "CD72"), ] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  # filter(marker == "CD21") %>% 
+  left_join(prox_data %>% 
+              filter(marker_1 == marker_2) %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") %>% 
+  filter(component %in% cells_in_data) %>% 
+  mutate(value = ifelse(is.na(value), 0, value))
+
+temp_data_CD21 <- 
+  list(proximity = temp_data %>% 
+         filter(marker == "CD21", metric == "log2_ratio"),
+       abundance = temp_data %>% 
+         filter(marker == "CD21", metric == "clr")) %>% 
+  map(. %>% 
+        mutate(rank = rank(value, ties.method = "first"),
+               prob = rank/max(rank))) 
+temp_auc <- 
+  temp_data_CD21 %>% 
+  map(. %>% 
+        with(auc(condition, prob, levels = c("HC", "SLE"))) %>% 
+        enframe(NULL, "auc") %>% 
+        mutate(auc = as.numeric(auc))) %>% 
+  bind_rows(.id = "metric") 
+
+temp_data_CD21 %>%
+  map(. %>% 
+        arrange(value) %>% 
+        roc("condition", "value", levels = c("HC", "SLE")) %>%
+        coords %>% 
+        arrange(sensitivity)) %>%
+  bind_rows(.id = "metric") %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_step(direction = "vh") +
+  geom_text(data = temp_auc, 
+            aes(label = paste0("AUC = ", round(auc, 2))),
+            x = 0.8, y = 0.1, size = 3) +
+  # geom_point(size = 0.1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  scale_x_continuous(limits = c(0, 1), expand = expansion(c(0.05, 0.05))) +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(c(0.05, 0.05))) +
+  coord_fixed() +
+  facet_wrap(~ metric) +
+  theme_bw() +
+  labs(x = "1 - specificity", y = "sensitivity",
+       title = "ROC curve for CD21") 
+
+ggsave("../results/Brodin/brodin_cd21_auc.pdf", 
+       width = 5, height = 3)
+
+
+temp_data_CD21 %>%
+  map(. %>% 
+        arrange(value) %>% 
+        roc("condition", "value", levels = c("HC", "SLE")) %>%
+        coords(ret = "all", transpose = FALSE)  %>% 
+        arrange(sensitivity)) %>%
+  bind_rows(.id = "metric") %>%
+  ggplot(aes(x =recall, y = precision)) +
+  geom_step(direction = "vh") +
+  geom_text(data = temp_auc, 
+            aes(label = paste0("AUC = ", round(auc, 2))),
+            x = 0.8, y = 0.1, size = 3) +
+  # geom_point(size = 0.1) +
+  # geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  scale_x_continuous(limits = c(0, 1), expand = expansion(c(0.05, 0.05))) +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(c(0.05, 0.05))) +
+  coord_fixed() +
+  facet_wrap(~ metric) +
+  theme_bw() +
+  labs(x = "recall", y = "precision",
+       title = "PR curve for CD21")
+
+ggsave("../results/Brodin/brodin_cd21_pr.pdf", 
+       width = 5, height = 3)
+```
+
 ## 3D plotting
 
 ```{r 3d_plotting, echo = FALSE, message = FALSE, warning = FALSE}
 
 plot_data <- 
   list(HC = read_csv("../data/BrodinLab_pixelgen_data_forpublication/3d_visualization_HC_high_clustering_layout_toPixelgen.csv"),
-       SLE = read_csv("../data/BrodinLab_pixelgen_data_forpublication/3d_visualization_SLE_high_clustering_layout_toPixelgen.csv")) %>% 
+       SLE = read_csv("../data/BrodinLab_pixelgen_data_forpublication/3d_visualization_SLE_high_clustering_layout_toPixelgen.csv") %>% 
+         rearrr::rotate_3d(
+           x_col = "x",
+           y_col = "y",
+           z_col = "z",
+           x_deg = 90,
+           y_deg = 0,
+           z_deg = 0,
+           origin = c(0, 0, 0),
+           keep_original = TRUE,
+           overwrite = TRUE
+         )) %>% 
   bind_rows(.id = "type")
 
+# plot_data %>% 
+#   filter(type == "SLE") %>% 
+#   rearrr::rotate_3d(
+#     x_col = "x",
+#     y_col = "y",
+#     z_col = "z",
+#     x_deg = 80,
+#     y_deg = 0,
+#     z_deg = 0,
+#     origin = c(0, 0, 0),
+#     keep_original = TRUE,
+#     overwrite = TRUE
+#   ) %>% 
+#   plotly::plot_ly(
+#     x = ~x_rotated, 
+#     y = ~y_rotated, 
+#     z = ~z_rotated, 
+#     color = ~CD21, 
+#     size = ~z,
+#     colors = c("gray", "orangered"),
+#     type = "scatter3d",
+#     mode = "markers",
+#     marker = list(size = 2, opacity = 0.5)
+#   ) 
+# 
+# plot_data %>% 
+#   filter(type == "SLE") %>% 
+#   as.data.frame() %>% 
+#   rearrr::rotate_3d(
+#     x_col = "x",
+#     y_col = "y",
+#     z_col = "z",
+#     x_deg = 110,
+#     y_deg = 0,
+#     z_deg = 0,
+#     origin = c(0, 0, 0),
+#     keep_original = TRUE,
+#     overwrite = TRUE
+#   ) %>% 
+#   arrange(z) %>% 
+#   ggplot(aes(x = x_rotated, y = y_rotated, z = z_rotated)) +
+#   geom_point(aes(color = CD21, size = z), alpha = 0.3) +
+#   coord_fixed() +
+#   scale_color_gradientn(colours = c("gray", "orangered")) +
+#   scale_size(range = c(0.1, 3)) +
+#   theme_void()
+
+
+
+# plot_data %>%
+#   mutate(x = ifelse(is.na(x_rotated), x, x_rotated),
+#          y = ifelse(is.na(y_rotated), y, y_rotated),
+#          z = ifelse(is.na(z_rotated), z, z_rotated)) %>% 
+#   arrange(z) %>% 
+#   # head(10000) %>% 
+#   mutate(node_type = case_when(
+#     CD41 == 1 ~ "CD41",
+#     CD72 == 1 ~ "CD72",
+#     CD21 == 1 ~ "CD21",
+#     TRUE ~ "Other"
+#   )) %>%
+#   ggplot(aes(x, y)) +
+#   geom_point(aes(color = node_type), 
+#              size = 0.5) +
+#   facet_wrap(~ type) +
+#   scale_color_manual(values = c("CD72" = "#E67C81", "CD21" = "#6A9BD1", "Other" = "gray90", 
+#                               "CD41" = "#A2D5AB")) +
+#   coord_fixed() +
+#   theme_void()
+# 
+# ggsave("../results/Brodin/brodin_3d_plot.pdf", 
+#        width = 5, height = 3)
+
+# LayerData(seur, "data")[, c("6b81434111175540", "8a5aa547e333b42c")] %>% 
+#   as_tibble(rownames = "marker") %>% 
+#   arrange(-`8a5aa547e333b42c`) %>% 
+#   ggplot(aes(`6b81434111175540`, `8a5aa547e333b42c`)) +
+#   geom_abline() +
+#   geom_point(size = 0.1) +
+#   geom_text(aes(label = marker)) +
+#   coord_fixed() +
+#   scale_x_continuous(limits = c(0, 6)) +
+#   scale_y_continuous(limits = c(0, 6)) +
+#   theme_bw()  
+
+
+
 plot_data %>%
+  mutate(x = ifelse(is.na(x_rotated), x, x_rotated),
+         y = ifelse(is.na(y_rotated), y, y_rotated),
+         z = ifelse(is.na(z_rotated), z, z_rotated)) %>%
   arrange(z) %>% 
   # head(10000) %>% 
   mutate(node_type = case_when(
-    CD41 == 1 ~ "CD41",
-    CD72 == 1 ~ "CD72",
-    CD21 == 1 ~ "CD21",
-    TRUE ~ "Other"
-  )) %>%
-  ggplot(aes(x, y)) +
-  geom_point(aes(color = node_type), 
-             size = 0.5) +
-  facet_wrap(~ type) +
-  scale_color_manual(values = c("CD72" = "#E67C81", "CD21" = "#6A9BD1", "Other" = "gray90", 
-                              "CD41" = "#A2D5AB")) +
-  coord_fixed() +
-  theme_void()
-
-ggsave("../results/Brodin/brodin_3d_plot.pdf", 
-       width = 5, height = 3)
-
-LayerData(seur, "data")[, c("6b81434111175540", "8a5aa547e333b42c")] %>% 
-  as_tibble(rownames = "marker") %>% 
-  arrange(-`8a5aa547e333b42c`) %>% 
-  ggplot(aes(`6b81434111175540`, `8a5aa547e333b42c`)) +
-  geom_abline() +
-  geom_point(size = 0.1) +
-  geom_text(aes(label = marker)) +
-  coord_fixed() +
-  scale_x_continuous(limits = c(0, 6)) +
-  scale_y_continuous(limits = c(0, 6)) +
-  theme_bw()  
-
-
-
-plot_data %>%
-  arrange(z) %>% 
-  # head(10000) %>% 
-  mutate(node_type = case_when(
-    CD41 == 1 ~ "CD41",
     CD72 == 1 ~ "CD72",
     CD21 == 1 ~ "CD21",
     TRUE ~ "Other"
   )) %>% 
   ggplot(aes(x = x, y = y, fill = node_type, alpha = 0.9)) +
-  geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300,
-                  alpha = 0.3) +
+  geom_point_rast(aes(alpha = node_type, size = z),
+                  shape = 21, stroke = 0.01, raster.dpi = 300) +
   facet_wrap(~ type) +
-  scale_color_manual(values = c("CD72" = "#E67C81", "CD21" = "#6A9BD1", "Other" = "gray90", 
-                              "CD41" = "#A2D5AB")) +
-  scale_fill_manual(values = c("CD72" = "#E67C81", "CD21" = "#6A9BD1", "Other" = "gray90", 
-                              "CD41" = "#A2D5AB")) +
+  scale_color_manual(values = c("CD72" = "#6A9BD1", "CD21" = "#E67C81", "Other" = "gray90")) +
+  scale_fill_manual(values = c("CD72" = "#6A9BD1", "CD21" = "#E67C81", "Other" = "gray90")) +
+  scale_alpha_manual(values = c("CD72" = 0.9, "CD21" = 0.9, "Other" = 0.2)) +
+  scale_size(range = c(0.1, 1.5)) +
   # scale_color_gradientn(colours = c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")) +
   # scale_fill_gradientn(colours = c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")) +
   coord_fixed() +
@@ -262,7 +521,11 @@ plot_data %>%
         axis.line = element_blank(),
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(), 
-        panel.background = element_rect(fill = "white")) +
-  ggtitle("CD40")
+        panel.background = element_rect(fill = "white")) 
+
+ggsave("../results/Brodin/brodin_3d_plot.pdf", 
+       width = 8, height = 3)
+
+
 
 ```

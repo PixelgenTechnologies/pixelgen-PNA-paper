@@ -529,3 +529,440 @@ ggsave("../results/Brodin/brodin_3d_plot.pdf",
 
 
 ```
+
+
+
+# Revision
+
+## B cell CD180 Proximity and abundance 
+
+```{r load_data, echo = FALSE, message = FALSE, warning = FALSE}
+
+metadata <- 
+  tibble(sample = c("S01_CP038_S1", "S02_CP038_S2", "S03_CP038_S3", "S04_CP038_S4"), 
+         condition = c("SLE", "HC", "SLE", "HC"), 
+         sample_alias = c("SLE1", "HC1", "SLE2", "HC2"))
+
+B_prox_data <- 
+  read_csv("../data/sle_figure_candidates/Bcells/cd180_clustering_b_cells.csv") %>% 
+  filter(component %in% B_cells)
+
+cells_meta <- 
+  B_prox_data %>% 
+  select(component, sample, condition) %>% 
+  distinct() %>% 
+  left_join(metadata) 
+
+B_prox_data %>% 
+  unite(contrast, marker_1, marker_2, sep = "/") %>% 
+  left_join(metadata) %>% 
+  ggplot(aes(condition, log2_ratio, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  # geom_jitter(aes(group = sample_alias), 
+  #             position = position_jitterdodge(dodge.width = 0.85, 
+  #                                             jitter.width = 0.1),
+  #             size = 0.1) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  # geom_point(data = . %>% 
+  #              filter(component %in% c("6b81434111175540", "8a5aa547e333b42c")),
+  #            color = "red", size = 3) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_wrap(~contrast) +
+  theme_bw() +
+  labs(x = NULL, y = "log2 ratio") 
+
+ggsave("../results/Brodin/brodin_CD180_violins.pdf", 
+       width = 5, height = 3)
+
+# h5ad data
+
+adata <- 
+  anndata::read_h5ad("../data/BrodinLab_pixelgen_data_forpublication/adata_bcells_toPixelgen.h5ad")
+
+seur <- 
+  CreateSeuratObject(t(adata$X)) %>% 
+  NormalizeData(normalization.method = "CLR", margin = 2) %>% 
+  AddMetaData(metadata = cells_meta %>% 
+                column_to_rownames("component")) 
+
+LayerData(seur, "data")[c("CD180"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>%
+  ggplot(aes(condition, clr, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  # geom_jitter(aes(group = sample_alias), 
+  #             position = position_jitterdodge(dodge.width = 0.85, 
+  #                                             jitter.width = 0.1),
+  #             size = 0.1) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_wrap(~marker) +
+  theme_bw() +
+  labs(x = NULL, y = "CLR") 
+
+ggsave("../results/Brodin/brodin_CD180_abundance_violins.pdf", 
+       width = 5, height = 3)
+
+
+###
+LayerData(seur, "data")[c("CD180"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD180") %>% 
+  left_join(B_prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD180") %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, clr)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(x = "log2 ratio", y = "CLR",
+       title = "CD180") 
+
+
+
+  
+LayerData(seur, "data")[c("CD180"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "count") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD180") %>% 
+  left_join(B_prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD180") %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, count)) +
+  geom_point() +
+  scale_y_log10() +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(x = "log2 ratio", y = "counts",
+       title = "CD180") 
+  
+
+LayerData(seur, "data")[c("CD180"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "count") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD180") %>% 
+  left_join(B_prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD180") %>% 
+              rename(marker = marker_1)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, min_count)) +
+  geom_point() +
+  # scale_y_log10() +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(title = "CD180") 
+
+LayerData(seur, "data")[c("CD180"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD180") %>% 
+  left_join(B_prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD180") %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") %>% 
+  mutate(value = ifelse(is.na(value), 0, value)) %>% 
+  ggplot(aes(condition, value, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  stat_compare_means(
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_wrap(~metric, scales = "free") +
+  theme_bw() +
+  labs(x = NULL, y = "log2 ratio") 
+
+ggsave("../results/Brodin/brodin_CD180_abundance_prox_violins.pdf", 
+       width = 6, height = 3)
+
+
+
+LayerData(seur, "data")[c("CD180"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  left_join(B_prox_data %>% 
+              filter(marker_1 == marker_2) %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") %>% 
+  mutate(value = ifelse(is.na(value), 0, value)) %>% 
+  ggplot(aes(condition, value, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  stat_compare_means(
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_grid(metric ~ marker, scales = "free") +
+  theme_bw() +
+  labs(x = NULL, y = "value") 
+
+ggsave("../results/Brodin/brodin_CD180_abundance_prox_violins_both.pdf", 
+       width = 7, height = 6)
+
+prox_data %>% 
+  bind_rows(B_prox_data) %>% 
+  filter(marker_1 == marker_2) %>% 
+  select(component, sample, condition, marker = marker_1, log2_ratio) %>% 
+  pivot_wider(names_from = marker, values_from = log2_ratio) %>% 
+  ggplot(aes(CD180, CD21, color = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  geom_point() +
+  geom_density2d() +
+  facet_wrap(~condition) +
+  coord_fixed() +
+  theme_bw()
+  
+
+```
+
+## Monocyte CD36 Proximity and abundance 
+
+```{r load_data, echo = FALSE, message = FALSE, warning = FALSE}
+
+metadata <- 
+  tibble(sample = c("S01_CP038_S1", "S02_CP038_S2", "S03_CP038_S3", "S04_CP038_S4"), 
+         condition = c("SLE", "HC", "SLE", "HC"), 
+         sample_alias = c("SLE1", "HC1", "SLE2", "HC2"))
+
+Mono_prox_data <- 
+  read_csv("../data/sle_figure_candidates/Monocytes/cd36_clustering_monocytes_cells.csv")
+
+cells_meta <- 
+  Mono_prox_data %>% 
+  select(component, sample, condition) %>% 
+  distinct() %>% 
+  left_join(metadata) 
+
+Mono_prox_data %>% 
+  unite(contrast, marker_1, marker_2, sep = "/") %>% 
+  left_join(metadata) %>% 
+  ggplot(aes(condition, log2_ratio, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  # geom_jitter(aes(group = sample_alias), 
+  #             position = position_jitterdodge(dodge.width = 0.85, 
+  #                                             jitter.width = 0.1),
+  #             size = 0.1) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  # geom_point(data = . %>% 
+  #              filter(component %in% c("6b81434111175540", "8a5aa547e333b42c")),
+  #            color = "red", size = 3) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_wrap(~contrast) +
+  theme_bw() +
+  labs(x = NULL, y = "log2 ratio") 
+
+ggsave("../results/Brodin/brodin_CD36_violins.pdf", 
+       width = 5, height = 3)
+
+# h5ad data
+
+adata <- 
+  anndata::read_h5ad("../data/sle_figure_candidates/Monocytes/adata_monocytes_countdata_toPixelgen.h5ad")
+
+seur <- 
+  CreateSeuratObject(t(adata$X)) %>% 
+  NormalizeData(normalization.method = "CLR", margin = 2) %>% 
+  AddMetaData(metadata = cells_meta %>% 
+                column_to_rownames("component")) 
+
+LayerData(seur, "data")[c("CD36"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>%
+  ggplot(aes(condition, clr, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  # geom_jitter(aes(group = sample_alias), 
+  #             position = position_jitterdodge(dodge.width = 0.85, 
+  #                                             jitter.width = 0.1),
+  #             size = 0.1) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_wrap(~marker) +
+  theme_bw() +
+  labs(x = NULL, y = "CLR") 
+
+ggsave("../results/Brodin/brodin_CD36_abundance_violins.pdf", 
+       width = 5, height = 3)
+
+
+###
+LayerData(seur, "data")[c("CD36"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD36") %>% 
+  left_join(Mono_prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD36") %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, clr)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(x = "log2 ratio", y = "CLR",
+       title = "CD36") 
+
+
+
+  
+LayerData(seur, "data")[c("CD36"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "count") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD36") %>% 
+  left_join(Mono_prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD36") %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, count)) +
+  geom_point() +
+  scale_y_log10() +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(x = "log2 ratio", y = "counts",
+       title = "CD36") 
+  
+
+LayerData(seur, "data")[c("CD36"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "count") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD36") %>% 
+  left_join(Mono_prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD36") %>% 
+              rename(marker = marker_1)) %>% 
+  mutate(log2_ratio = ifelse(is.na(log2_ratio), 0, log2_ratio)) %>%
+  ggplot(aes(log2_ratio, min_count)) +
+  geom_point() +
+  # scale_y_log10() +
+  facet_wrap(~condition) +
+  theme_bw() +
+  labs(title = "CD36") 
+
+LayerData(seur, "data")[c("CD36"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  filter(marker == "CD36") %>% 
+  left_join(Mono_prox_data %>% 
+              filter(marker_1 == marker_2, marker_1 == "CD36") %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") %>% 
+  mutate(value = ifelse(is.na(value), 0, value)) %>% 
+  ggplot(aes(condition, value, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  stat_compare_means(
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_wrap(~metric, scales = "free") +
+  theme_bw() +
+  labs(x = NULL, y = "log2 ratio") 
+
+ggsave("../results/Brodin/brodin_CD36_abundance_prox_violins.pdf", 
+       width = 6, height = 3)
+
+
+
+LayerData(seur, "data")[c("CD36"), , drop = FALSE] %>% 
+  as_tibble(rownames = "marker") %>%
+  pivot_longer(-marker, names_to = "component", values_to = "clr") %>%
+  left_join(cells_meta) %>% 
+  left_join(Mono_prox_data %>% 
+              filter(marker_1 == marker_2) %>% 
+              select(marker = marker_1, component, log2_ratio)) %>% 
+  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") %>% 
+  mutate(value = ifelse(is.na(value), 0, value)) %>% 
+  ggplot(aes(condition, value, fill = condition)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample_alias), 
+              draw_quantiles = 0.5) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample_alias),
+                            dodge.width = 0.85, 
+                            size = 0.1) +
+  stat_compare_means(
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray90")) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+  facet_grid(metric ~ marker, scales = "free") +
+  theme_bw() +
+  labs(x = NULL, y = "value") 
+
+ggsave("../results/Brodin/brodin_CD36_abundance_prox_violins_both.pdf", 
+       width = 7, height = 6)
+
+
+```

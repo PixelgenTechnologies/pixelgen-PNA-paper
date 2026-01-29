@@ -28,6 +28,7 @@ library(pcaMethods)
 library(pbapply)
 library(ggpubr)
 library(ggrastr)
+library(ggraph)
 source("theme.R")
 source("utility.R")
 ```
@@ -544,8 +545,7 @@ metadata <-
          sample_alias = c("SLE1", "HC1", "SLE2", "HC2"))
 
 B_prox_data <- 
-  read_csv("../data/sle_figure_candidates/Bcells/cd180_clustering_b_cells.csv") %>% 
-  filter(component %in% B_cells)
+  read_csv("../data/sle_figure_candidates/Bcells/cd180_clustering_b_cells.csv") 
 
 cells_meta <- 
   B_prox_data %>% 
@@ -966,3 +966,844 @@ ggsave("../results/Brodin/brodin_CD36_abundance_prox_violins_both.pdf",
 
 
 ```
+
+
+## UMAP and cell composition
+
+```{r}
+annotation_markers <-
+  c("CD10", "CD117", "CD11a", "CD11b", 
+    "CD11c", "CD123", "CD127", "CD138", "CD14", "CD141", "CD158", 
+    "CD159a", "CD159c", "CD16", "CD19", "CD1c", "CD20", "CD24", "CD25", 
+    "CD27", "CD28", "CD3e", "CD335", "CD337", "CD35", "CD38", 
+    "CD4", "CD8", "CD45RA", "CD45RO", "CD56", "CD57", "CD58", "CD66b", "CD95", 
+    "HLA-DR", "IgD", "TCRgd", "TCRva7.2", "TCRVd2", "TCRVg9", 
+    "CD41", "CD9", 
+    
+    "TCRab", "CD45", "CD45RB", "CD2", "CD5", "CD26", "CD161", 
+    "CD21", "CD22", "CD33", "CD79a", "CD7", "IgE", "IgM", "NKp80")
+
+adata <- 
+  anndata::read_h5ad("../data/BrodinLab_pixelgen_data_forpublication/h5ad_clustering_to_pixelgen/adata_counts_all_to_pixelgen.h5ad")
+
+
+seur <- 
+  CreateSeuratObject(t(adata$X)) %>% 
+  NormalizeData(normalization.method = "CLR", margin = 2) |> 
+  AddMetaData(metadata = read_csv("../data/BrodinLab_pixelgen_data_forpublication/h5ad_clustering_to_pixelgen/metadata_to_pixelgen.csv") %>% 
+                column_to_rownames("component"))
+
+set.seed(37)
+seur <- 
+  seur |> 
+  NormalizeData(normalization.method = "CLR", margin = 2) %>%
+  FindVariableFeatures(nfeatures = 75) %>%
+  ScaleData() 
+
+VariableFeatures(seur)[!VariableFeatures(seur) %in% annotation_markers]
+
+seur <- 
+  seur %>% 
+  RunPCA(features = annotation_markers) %>%
+  RunHarmony(
+          group.by.vars = "sample",
+          plot_convergence = FALSE,
+        ) |> 
+  RunUMAP(reduction = "harmony", dims = 1:15, n.neighbors = 15, seed.use = 37) |> 
+  FindNeighbors(reduction = "harmony", dims = 1:15, k.param = 15) %>%
+  FindClusters(resolution = 0.5, random.seed = 37)
+
+
+seur[[]] |> 
+  group_by(sample) |> 
+  mutate(rank = rank(-n_umi)) |> 
+  ggplot(aes(rank, n_umi)) +
+  geom_point() +
+  geom_hline(yintercept = 1e4) +
+  scale_y_log10() +
+  scale_x_log10()
+
+Reductions(seur, "pca")@stdev %>% 
+  enframe("PC", "sd") %>% 
+  ggplot(aes(PC, sd)) +
+  geom_line() +
+  geom_point()
+#   
+# seur <- 
+#   seur %>% 
+#   FindNeighbors(reduction = "pca", dims = 1:15, k.param = 15) 
+
+plot_embedding(seur, "umap",
+               metavars = "condition",
+               # pal = cell_palette,
+               plot_title = "Clusters")
+
+plot_embedding(seur, "umap",
+               metavars = "CellType",
+               pal = pbmc_cell_type_palette,
+               plot_title = "samples") 
+
+plot_embedding(seur, "umap",
+               metavars = "seurat_clusters",
+               plot_title = "samples") 
+
+
+plot_data <- 
+  seur %>% 
+  Embeddings("umap") %>% 
+  as_tibble(rownames = "component") %>% 
+  left_join(FetchData(seur, c("sample", "condition", "CellType")) %>% 
+              as_tibble(rownames = "component"))
+
+
+plot_data %>% 
+  ggplot(aes(umap_1, umap_2, color = CellType)) +
+  # geom_path() +
+  geom_point(size = 0.3) +
+  geom_text(data = . %>% 
+              group_by(CellType) %>%
+              summarise(umap_1 = median(umap_1),
+                        umap_2 = median(umap_2)),
+            aes(label = CellType), 
+            color = "black",
+            size = 2, alpha = 0.5) +
+  scale_color_manual(values = pbmc_cell_type_palette) +
+  coord_fixed() +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(color = "Cell type",
+       x = "UMAP 1",
+       y = "UMAP 2") 
+
+ggsave(
+  filename = "../results/Brodin/UMAP_annotated_cells.pdf",
+  width = 8,
+  height = 8
+)
+ggsave(
+  filename = "../results/Brodin/UMAP_annotated_cells_small.pdf",
+  width = 5,
+  height = 5
+)
+
+
+plot_data %>% 
+  ggplot(aes(umap_1, umap_2, color = condition)) +
+  geom_point(size = 0.3) +
+  scale_color_manual(values = c("SLE" = "#E67C81", "HC" = "gray70")) +
+  coord_fixed() +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(color = "Cell type",
+       x = "UMAP 1",
+       y = "UMAP 2") 
+
+ggsave(
+  filename = "../results/Brodin/UMAP_sle.pdf",
+  width = 8,
+  height = 8
+)
+ggsave(
+  filename = "../results/Brodin/UMAP_sle_small.pdf",
+  width = 5,
+  height = 5
+)
+
+seur[[]] |> 
+  as_tibble() |> 
+  group_by(sample, condition, CellType) |> 
+  count() |> 
+  group_by(sample) |> 
+  mutate(frac = n / sum(n)) |> 
+  ungroup() |> 
+  mutate(CellType = factor(CellType, names(pbmc_cell_type_palette))) |> 
+  ggplot(aes(sample, frac, fill = CellType)) +
+  geom_col() +
+  geom_text(aes(label = paste0(round(100*frac, 1), "%")),
+            position = position_stack(vjust = 0.5)) +
+  facet_grid(~ condition, scales = "free_x", space = "free") +
+  scale_fill_manual(values = pbmc_cell_type_palette) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     expand = expansion(0)) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    panel.grid = element_blank(),
+    panel.border = element_blank()
+    )
+ggsave(
+  filename = "../results/Brodin/cell_type_composition.pdf",
+  width = 4,
+  height = 5
+)
+
+VlnPlot(seur, "CD44", group.by = "CellType", split.by = "sample")
+
+VlnPlot(seur, c("CD20", "CD19", "CD43", "CD44", "CD3e"), group.by = c("CellType", "sample"))
+#, split.by = "sample")
+
+
+```
+
+#### Proximity Analysis
+
+```{r}
+
+prox <- read_csv("../data/BrodinLab_pixelgen_data_forpublication/h5ad_clustering_to_pixelgen/B_clustering.csv") |> 
+  left_join(FetchData(seur, c("condition", "CellType", "n_umi")) |> 
+              as_tibble(rownames = "component")) |> 
+  mutate(p1 = marker_1_count / n_umi,
+         p2 = marker_2_count / n_umi,
+         pmin = ifelse(p1 < p2, p1, p2))
+
+
+table(unique(prox$component) %in% colnames(seur))
+n_distinct(prox$component)
+# prox$component
+prox$sample |> table()
+prox$CellType |> table()
+
+prox |> 
+  mutate(type = ifelse(marker_1 == marker_2, "self", "cross")) |>
+  ggplot(aes(pmin, fill = type)) +
+  geom_vline(xintercept = c(0.001)) +
+  geom_histogram(alpha = 0.5, 
+                 position = position_dodge()) +
+  scale_x_log10() +
+  scale_x_log10() +
+  labs(x = "Minimum marker frequency") +
+  theme_bw() 
+
+prox_sum <- 
+  prox |> 
+  filter(pmin > 0.001) |> 
+  SummarizeProximityScores(group_vars = "condition") 
+
+
+plot_markers <- 
+  seur |> 
+  subset(CellType == "B") |> 
+  LayerData("data") |> 
+  rowSums() |> 
+  sort() |> 
+  tail(20) |> 
+  names()
+
+plot_markers <- unique(c(plot_markers, "CD21", "CD180", "CD19", "CD81"))
+
+plots <- 
+  prox_sum$condition |> 
+  unique() |> 
+  set_names() |> 
+  lapply(function(cond) {
+    prox_sum |> 
+      filter(condition == cond) |>
+      filter(marker_1 %in% plot_markers,
+             marker_2 %in% plot_markers) |> 
+      mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 0.75, sign(mean_log2_ratio) * 0.75, mean_log2_ratio)) |> 
+      ColocalizationHeatmap(value_col = "mean_log2_ratio", 
+                            size_col = "pct_detected", 
+                            size_range = c(4, 4),
+                            colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                            type = "dots") +
+      coord_fixed() +
+      theme(panel.grid = element_blank()) +
+      labs(title = cond)
+    
+  })
+
+pdf(
+  file = "../results/Brodin/B_cell_proximity_heatmap.pdf",
+  width = 6,
+  height = 5
+)
+plots
+dev.off()
+
+p1 <- 
+  prox_sum |> 
+  filter(condition == "SLE") |>
+  filter(marker_1 %in% plot_markers,
+         marker_2 %in% plot_markers) |> 
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 0.8, sign(mean_log2_ratio) * 0.8, mean_log2_ratio)) |> 
+  ColocalizationHeatmap(value_col = "mean_log2_ratio", 
+                        size_col = "pct_detected", 
+                        size_range = c(4, 4),
+                        colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                        type = "dots") +
+  coord_fixed() +
+  theme(panel.grid = element_blank()) +
+  labs(title = "SLE")
+
+p2 <- 
+  prox_sum |> 
+  filter(condition == "HC") |>
+  filter(marker_1 %in% plot_markers,
+         marker_2 %in% plot_markers) |> 
+  mutate(marker_1 = factor(marker_1, levels(p1@data$marker_1)),
+         marker_2 = factor(marker_2, levels(p1@data$marker_2))) |>
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 0.8, sign(mean_log2_ratio) * 0.8, mean_log2_ratio)) |> 
+  ColocalizationHeatmap(value_col = "mean_log2_ratio", 
+                        size_col = "pct_detected", 
+                        cluster_cols = FALSE,
+                        cluster_rows = FALSE,
+                        size_range = c(4, 4),
+                        colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                        type = "dots") +
+  coord_fixed() +
+  theme(panel.grid = element_blank()) +
+  labs(title = "HC")
+
+p2 | p1
+
+ggsave(
+  filename = "../results/Brodin/B_cell_proximity_heatmap_sidebyside.pdf",
+  width = 12,
+  height = 5
+)
+
+p3 <- 
+  prox_sum |> 
+  filter(marker_1 %in% plot_markers,
+         marker_2 %in% plot_markers) |> 
+  mutate(marker_1 = factor(marker_1, levels(p1@data$marker_1)),
+         marker_2 = factor(marker_2, levels(p1@data$marker_2))) |>
+  select(condition, marker_1, marker_2, mean_log2_ratio) |>
+  pivot_wider(names_from = condition, values_from = mean_log2_ratio) |>
+  mutate(diff = SLE - HC) |> 
+  mutate(diff = ifelse(abs(diff) > 0.5, sign(diff) * 0.5, diff)) |>
+  ColocalizationHeatmap(value_col = "diff", 
+                        size_col = "diff", 
+                        cluster_cols = FALSE,
+                        cluster_rows = FALSE,
+                        size_range = c(4, 4),
+                        colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                        type = "dots") +
+  coord_fixed() +
+  theme(panel.grid = element_blank()) +
+  labs(title = "SLE - HC")
+
+p3
+ggsave(
+  filename = "../results/Brodin/B_cell_proximity_heatmap_difference.pdf",
+  width = 6,
+  height = 5
+)
+
+prox_pca <- 
+  prox |> 
+  # filter(marker_1 %in% plot_markers,
+  #        marker_2 %in% plot_markers) |> 
+  filter(pmin > 0.001) |>
+  select(marker_1, marker_2, log2_ratio, component) |> 
+  unite(pair, marker_1, marker_2, sep = "/") %>%
+  pivot_wider(names_from = pair, values_from = log2_ratio, values_fill = 0) |> 
+  column_to_rownames("component") |> 
+  pcaMethods::pca(nPcs = 10, scale = "none")
+
+prox_pca@loadings |> 
+  as_tibble(rownames = "pair") |> 
+  arrange(-abs(PC1))
+
+
+prox_pca@loadings |> 
+  as_tibble(rownames = "pair") |> 
+  arrange(-abs(PC2))
+
+prox_pca@loadings |> 
+  as_tibble(rownames = "pair") |> 
+  arrange(-abs(PC2))
+
+prox_pca@loadings |> 
+  as_tibble(rownames = "pair") |> 
+  select(pair, value = PC8) |> 
+  arrange(-abs(value)) |> 
+  head(40) |> 
+  separate(pair, into = c("marker_1", "marker_2"), sep = "/") |> 
+  as_tbl_graph() |> 
+  mutate(degree = centrality_degree()) |>
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = abs(value),
+                     edge_width = abs(value),
+                     edge_color = value)) +
+  geom_node_point(aes(size = degree), color = "gray20") +
+  geom_node_text(aes(label = name), vjust = 1.5, size = 3) +
+  scale_edge_color_gradientn(colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                             name = "PC2 loading") +
+  scale_edge_width(range = c(0.2, 2), name = "PC2 loading") +
+  scale_edge_alpha(range = c(0.2, 1), name = "PC2 loading") +
+  theme_void() +
+  coord_fixed() +
+  labs(title = "B cell proximity PCA - PC2 loadings")
+
+
+
+prox_pca@scores |> 
+  as_tibble(rownames = "component") |>
+  left_join(FetchData(seur, c("condition")) |> 
+              as_tibble(rownames = "component")) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point() +
+  geom_vline(xintercept = -2.5, linetype = "dashed") +
+  facet_wrap(~condition) +
+  theme_bw() +
+  coord_fixed() +
+  labs(x = "PC1", y = "PC2",
+       title = "B cell proximity PCA")
+
+prox_pca@scores |> 
+  as_tibble(rownames = "component") |>
+  left_join(FetchData(seur, c("condition", "CD3e")) |> 
+              as_tibble(rownames = "component")) |> 
+  ggplot(aes(PC1, CD3e)) +
+  geom_point() +
+  facet_wrap(~condition) 
+
+cells_of_interest <- 
+  prox_pca@scores |> 
+  as_tibble(rownames = "component") |>
+  filter(PC1 < -5) |> 
+  pull(1)
+  
+prox |> 
+  filter(marker_1 %in% plot_markers,
+         marker_2 %in% plot_markers) |>
+  filter(pmin > 0.001) |>
+  mutate(highlight = ifelse(component %in% cells_of_interest, "PC1 outliers", "Others")) |>
+  SummarizeProximityScores(group_vars = "highlight") |> 
+  group_by(marker_1, marker_2) |> 
+  filter(any(mean_log2_ratio > 0.5)) |> 
+  select(marker_1, marker_2, highlight, mean_log2_ratio) |> 
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 2, sign(mean_log2_ratio) * 2, mean_log2_ratio)) |>
+  as_tbl_graph() |> 
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_color = mean_log2_ratio)) +
+  geom_node_point(size = 2, color = "gray20") +
+  geom_node_text(aes(label = name), vjust = 1.5, size = 3) +
+  facet_wrap(~highlight) +
+  scale_edge_color_gradientn(colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                             limits = c(-2, 2),
+                             name = "Mean log2 ratio") +
+  # scale_edge_width(range = c(0.2, 2), name = "Mean log2 ratio") +
+  scale_edge_alpha(range = c(0.2, 1), name = "Mean log2 ratio") +
+  theme_void() +
+  coord_fixed() +
+  labs(title = "B cell proximity network\n(highlighted: cells with low PC1 scores)")
+
+# PLS
+
+library(pls)
+
+X <-
+  prox |> 
+  # filter(marker_1 %in% plot_markers,
+  #        marker_2 %in% plot_markers) |> 
+  filter(pmin > 0.01) |>
+  select(marker_1, marker_2, log2_ratio, component) |> 
+  unite(pair, marker_1, marker_2, sep = "/") %>%
+  pivot_wider(names_from = pair, values_from = log2_ratio, values_fill = 0) |> 
+  column_to_rownames("component") |> 
+  as.matrix()
+
+Y <- 
+  FetchData(seur, "condition") %>% 
+  mutate(condition = ifelse(condition == "SLE", 1, 0)) %>%
+  as.matrix()
+
+Y <- Y[rownames(X), ,drop = FALSE]
+
+pls_data <- 
+  plsr(
+    Y ~ X,
+    ncomp = 2
+  )
+
+pls_data$loadings[, 1:2] |> 
+  as_tibble(rownames = "pair") |> 
+  select(pair, value = 3) |> 
+  # arrange(-abs(value)) 
+  head(60) |> 
+  separate(pair, into = c("marker_1", "marker_2"), sep = "/") |> 
+  as_tbl_graph() |> 
+  mutate(degree = centrality_degree()) |>
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = abs(value),
+                     edge_width = abs(value),
+                     edge_color = value)) +
+  geom_node_point(aes(size = degree), color = "gray20") +
+  geom_node_text(aes(label = name), vjust = 1.5, size = 3) +
+  scale_edge_color_gradientn(colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                             name = "PC2 loading") +
+  scale_edge_width(range = c(0.2, 2), name = "PC2 loading") +
+  scale_edge_alpha(range = c(0.2, 1), name = "PC2 loading") +
+  theme_void() +
+  coord_fixed() +
+  labs(title = "B cell proximity PCA - PC2 loadings")
+
+pls_data$scores[, 1:2] |> 
+  as_tibble(rownames = "component") |>
+  left_join(FetchData(seur, c("condition")) |> 
+              as_tibble(rownames = "component")) %>%
+  ggplot(aes(`Comp 1`, `Comp 2`)) +
+  geom_point() +
+  geom_vline(xintercept = 2.5, linetype = "dashed") +
+  geom_hline(yintercept = 2.5, linetype = "dashed") +
+  facet_wrap(~condition) +
+  theme_bw() +
+  coord_fixed() +
+  labs(x = "PLS1", y = "PLS2",
+       title = "B cell proximity PCA")
+
+
+markers_of_interest <- c("CD22","CD21", "CD35", "IgM")
+pls_data$scores[, 1:2] |> 
+  as_tibble(rownames = "component") |>
+  left_join(FetchData(seur, c("condition")) |> 
+              as_tibble(rownames = "component")) %>%
+  left_join(prox |> 
+              filter(marker_1 %in% markers_of_interest, 
+                     marker_2 %in% markers_of_interest)) |> 
+  unite(pair, marker_1, marker_2, sep = "/") %>%
+  ggplot(aes(`Comp 1`, `Comp 2`, color = log2_ratio)) +
+  geom_point(size = 1) +
+  geom_vline(xintercept = -2.5, linetype = "dashed") +
+  facet_wrap(~pair) +
+  scale_color_gradientn(colors = pixelatorR::PixelgenGradient(100, "BluesCherry")) +
+  theme_bw() +
+  coord_fixed() +
+  labs(x = "PC1", y = "PC2",
+       title = "B cell proximity PCA")
+
+cells_of_interest <-
+  pls_data$scores[, 1:2] |> 
+  as_tibble(rownames = "component") |> 
+  filter(`Comp 1` > 2.5, 
+         `Comp 2` < 2.5) |> 
+  pull(1)
+
+
+prox |> 
+  filter(pmin > 0.0025) |>
+  filter(
+    
+    (marker_1 == "CD21" & marker_2 == "CD35") |
+      (marker_1 == marker_2 & marker_1 %in% c("CD21", "CD35", "IgM", "HLA-DR", "CD180"))
+           ) |> 
+  mutate(highlight = ifelse(component %in% cells_of_interest, "PC1 outliers", "Others")) |>
+  select(component, marker_1, marker_2, highlight, log2_ratio) |>
+  unite(pair, marker_1, marker_2, sep = "/") %>%
+  pivot_wider(names_from = pair, values_from = log2_ratio, values_fill = 0) |>
+  pivot_longer(-c(component, highlight), names_to = "pair", values_to = "log2_ratio") %>%
+  ggplot(aes(highlight, log2_ratio, fill = highlight)) +
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = highlight), draw_quantiles = 0.5) +
+  geom_jitter(aes(group = highlight), 
+              position = position_jitterdodge(dodge.width = 0.85, jitter.width = 0.1),
+              size = 0.1) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("Others", "PC1 outliers")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("PC1 outliers" = "red", "Others" = "gray80")) +
+  facet_wrap(~pair, ncol = 2) +
+  theme_bw() +
+  labs(x = NULL, y = "log2 ratio",
+       title = "B cell proximity PCA - PC1 outliers")
+
+FetchData(seur, c("CD2", "CD3e", "condition", "CellType"), layer = "data") |> 
+  as_tibble(rownames = "component") |> 
+  pivot_longer(-c(component, condition, CellType), names_to = "marker", values_to = "clr") |>
+  filter(CellType %in% c("B")) |> 
+  mutate(highlight = ifelse(component %in% cells_of_interest, "PC1 outliers", "Others")) |>
+  ggplot(aes(highlight, clr, fill = highlight)) +
+  geom_violin(aes(group = highlight), draw_quantiles = 0.5) +
+  geom_jitter(aes(group = highlight), 
+              position = position_jitterdodge(dodge.width = 0.85, jitter.width = 0.1),
+              size = 0.1) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("Others", "PC1 outliers")),
+    method = "wilcox.test", 
+    size = 3) +
+  scale_fill_manual(values = c("PC1 outliers" = "red", "Others" = "gray80")) +
+  facet_grid(marker~condition) +
+  theme_bw() +
+  labs(x = NULL, y = "CD3e CLR",
+       title = "B cell proximity PCA - PC1 outliers")
+  
+prox |> 
+  filter(pmin > 0.001) |>
+  mutate(highlight = ifelse(component %in% cells_of_interest, "PC1 outliers", "Others")) |> 
+  inner_join(pls_data$loadings[, 1:2] |> 
+               as_tibble(rownames = "pair") |> 
+               select(pair, value = 3) |> 
+               filter(abs(value) > 0.1) |> 
+               separate(pair, into = c("marker_1", "marker_2"), sep = "/")) |> 
+  select(component, marker_1, marker_2, log2_ratio) |>
+  unite(pair, marker_1, marker_2, sep = "/") %>%
+  pivot_wider(names_from = pair, values_from = log2_ratio, values_fill = 0) |> 
+  column_to_rownames("component") %>%
+  pheatmap::pheatmap(
+    annotation_row = tibble(
+      component = rownames(.)
+    ) |> 
+      mutate(highlight = ifelse(component %in% cells_of_interest, "PC1 outliers", "Others")) |>  
+      left_join(FetchData(seur, c("condition")) |> 
+                  as_tibble(rownames = "component")) |>
+      column_to_rownames("component")
+                            
+  )
+
+
+diff_prox <- 
+  prox |> 
+  filter(pmin > 0.0025) |>
+  DifferentialProximityAnalysis(
+    proximity_metric = "log2_ratio",
+    backed = "data.table",
+    min_n_obs = 10,
+    contrast_column = "condition",
+    reference = "HC")
+
+diff_prox |> 
+  ggplot(aes(diff_median, -log10(p_adj))) +
+  geom_point(size = 0.1) +
+  geom_text(
+    data = . %>% 
+      filter(p_adj < 0.05,
+             abs(diff_median) > 0.25),
+    aes(label = paste0(marker_1, "/", marker_2)),
+    vjust = 1.5, size = 3
+  ) +
+  theme_bw()
+ggsave(
+  filename = "../results/Brodin/B_cell_proximity_differential_proximity_volcano.pdf",
+  width = 6,
+  height = 5
+)
+
+diff_prox2 <- 
+  prox |> 
+  filter(pmin > 0.0025) |>
+  filter(!component %in% cells_of_interest) |> 
+  DifferentialProximityAnalysis(
+    proximity_metric = "log2_ratio",
+    backed = "data.table",
+    min_n_obs = 10,
+    contrast_column = "condition",
+    reference = "HC")
+
+diff_prox2 |> 
+  ggplot(aes(diff_median, -log10(p_adj))) +
+  geom_point() +
+  geom_text(
+    data = . %>% 
+      filter(p_adj < 0.05),
+    aes(label = paste0(marker_1, "/", marker_2)),
+    vjust = 1.5, size = 3
+  )
+
+
+prox |> 
+  filter(pmin > 0.001) |>
+  mutate(highlight = ifelse(component %in% cells_of_interest, "Outliers", "Others")) |> 
+  inner_join(diff_prox |> 
+               filter(p_adj < 0.01) |>
+               select(marker_1, marker_2)) |> 
+  select(component, marker_1, marker_2, log2_ratio) |>
+  unite(pair, marker_1, marker_2, sep = "/") %>%
+  pivot_wider(names_from = pair, values_from = log2_ratio, values_fill = 0) |> 
+  left_join(FetchData(seur, c("CD3e", "CD2", "CD20", "CD19", "CD41", "CD9"), 
+                      layer = "data") |> 
+              scale() |>
+              as_tibble(rownames = "component")) |>
+  column_to_rownames("component") %>%
+  pheatmap::pheatmap(
+    annotation_row = tibble(
+      component = rownames(.)
+    ) |> 
+      mutate(highlight = ifelse(component %in% cells_of_interest, "Outliers", "Others")) |>  
+      left_join(FetchData(seur, c("condition")) |> 
+                  as_tibble(rownames = "component")) |>
+      column_to_rownames("component"),
+    cutree_rows = 2
+                            
+  )
+ 
+  
+
+prox |> 
+  filter(pmin > 0.001) |>
+  filter(!component %in% cells_of_interest) |> 
+  mutate(highlight = ifelse(component %in% cells_of_interest, "Outliers", "Others")) |> 
+  inner_join(diff_prox2 |> 
+               filter(p_adj < 0.01) |>
+               select(marker_1, marker_2)) |> 
+  select(component, marker_1, marker_2, log2_ratio) |>
+  unite(pair, marker_1, marker_2, sep = "/") %>%
+  pivot_wider(names_from = pair, values_from = log2_ratio, values_fill = 0) |> 
+  left_join(FetchData(seur, c("CD3e", "CD2", "CD20", "CD19", "CD41", "CD9"), 
+                      layer = "data") |> 
+              scale() |>
+              as_tibble(rownames = "component")) |>
+  column_to_rownames("component") %>%
+  pheatmap::pheatmap(
+    annotation_row = tibble(
+      component = rownames(.)
+    ) |> 
+      mutate(highlight = ifelse(component %in% cells_of_interest, "Outliers", "Others")) |>  
+      left_join(FetchData(seur, c("condition")) |> 
+                  as_tibble(rownames = "component")) |>
+      column_to_rownames("component"),
+    cutree_rows = 2
+                            
+  )
+ 
+  
+
+
+prox |> 
+  filter(pmin > 0.001) |>
+  mutate(highlight = ifelse(component %in% cells_of_interest, "Outliers", "Others")) |> 
+  SummarizeProximityScores(group_vars = "highlight") |>
+  filter(mean_log2_ratio > 0.5) |> 
+  select(marker_1, marker_2, highlight, mean_log2_ratio) |> 
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 2, sign(mean_log2_ratio) * 2, mean_log2_ratio)) |>
+  as_tbl_graph() |> 
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_color = mean_log2_ratio)) +
+  geom_node_point(size = 2, color = "gray20") +
+  geom_node_text(aes(label = name), vjust = 1.5, size = 3) +
+  facet_wrap(~highlight) +
+  scale_edge_color_gradientn(colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                             limits = c(-2, 2),
+                             name = "Mean log2 ratio") +
+  # scale_edge_width(range = c(0.2, 2), name = "Mean log2 ratio") +
+  scale_edge_alpha(range = c(0.2, 1), name = "Mean log2 ratio") +
+  theme_void() +
+  coord_fixed() +
+  labs(title = "B cell proximity network\n(highlighted: cells with low PLS1 scores)")
+
+
+
+prox_sum2 <- 
+  prox |> 
+  filter(!component %in% cells_of_interest) |>
+  filter(pmin > 0.001) |> 
+  SummarizeProximityScores(group_vars = "condition") 
+
+
+p1 <- 
+  prox_sum2 |> 
+  filter(condition == "SLE") |>
+  filter(marker_1 %in% plot_markers,
+         marker_2 %in% plot_markers) |> 
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 0.8, sign(mean_log2_ratio) * 0.8, mean_log2_ratio)) |> 
+  ColocalizationHeatmap(value_col = "mean_log2_ratio", 
+                        size_col = "pct_detected", 
+                        size_range = c(4, 4),
+                        colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                        type = "dots") +
+  coord_fixed() +
+  theme(panel.grid = element_blank()) +
+  labs(title = "SLE")
+
+p2 <- 
+  prox_sum2 |> 
+  filter(condition == "HC") |>
+  filter(marker_1 %in% plot_markers,
+         marker_2 %in% plot_markers) |> 
+  mutate(marker_1 = factor(marker_1, levels(p1@data$marker_1)),
+         marker_2 = factor(marker_2, levels(p1@data$marker_2))) |>
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 0.8, sign(mean_log2_ratio) * 0.8, mean_log2_ratio)) |> 
+  ColocalizationHeatmap(value_col = "mean_log2_ratio", 
+                        size_col = "pct_detected", 
+                        cluster_cols = FALSE,
+                        cluster_rows = FALSE,
+                        size_range = c(4, 4),
+                        colors = pixelatorR::PixelgenGradient(100, "BluesCherry"),
+                        type = "dots") +
+  coord_fixed() +
+  theme(panel.grid = element_blank()) +
+  labs(title = "HC")
+
+p2 | p1
+
+ggsave(
+  filename = "../results/Brodin/B_cell_proximity_heatmap_sidebyside_filt.pdf",
+  width = 12,
+  height = 5
+)
+
+some_markers <- 
+  diff_prox |> 
+  filter(p_adj < 0.001,
+         diff_median > 0.25) |> 
+  select(marker_1, marker_2) |> 
+  unlist() |> 
+  unique()
+
+FetchData(seur, c("condition", "sample", "CellType", some_markers)) |> 
+  as_tibble(rownames = "component") |> 
+  filter(CellType == "B") |> 
+  pivot_longer(-c(component, condition, sample, CellType), names_to = "marker", values_to = "clr") |>
+  ggplot(aes(condition, clr, group = sample, fill = condition))+
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample), draw_quantiles = 0.5) +
+  geom_jitter(aes(group = sample), 
+              position = position_jitterdodge(dodge.width = 0.85, jitter.width = 0.1),
+              size = 0.2, alpha = 0.5) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  facet_wrap(~marker, scales = "free_y") +
+  scale_y_continuous(expand = expansion(c(0.05, 0.2))) + 
+  theme_bw() +
+  labs(x = NULL, y = "CLR",
+       title = "Marker expression by condition") +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray70"))
+
+FetchData(seur, c("condition", "sample", "CellType", some_markers)) |> 
+  as_tibble(rownames = "component") |> 
+  filter(CellType == "B") |> 
+  pivot_longer(-c(component, condition, sample, CellType), names_to = "marker", values_to = "clr") |> 
+  left_join(prox |> 
+              filter(marker_1 %in% some_markers,
+                     marker_2 %in% some_markers, 
+                     marker_1 == marker_2) |> 
+              filter(pmin > 0.001) |> 
+              select(component, marker = marker_1, log2_ratio)) |> 
+  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") |>
+  mutate(value = ifelse(is.na(value), 0, value)) |>
+  ggplot(aes(condition, value, group = sample, fill = condition))+
+  geom_hline(yintercept = 0) +
+  geom_violin(aes(group = sample), draw_quantiles = 0.5) +
+  ggbeeswarm::geom_beeswarm(aes(group = sample),
+                            dodge.width = 0.9,
+                            corral.width = 0.45, 
+                            size = 0.1) +
+  stat_compare_means(
+    # aes(label = ..p.format..), 
+    comparisons = list(c("HC", "SLE")),
+    method = "wilcox.test", 
+    size = 3) +
+  facet_grid(metric~marker, scales = "free_y") +
+  scale_y_continuous(expand = expansion(c(0.05, 0.2))) + 
+  theme_bw() +
+  labs(x = NULL, y = "Value") +
+  scale_fill_manual(values = c("SLE" = "#E67C81", "HC" = "gray70"))
+
+ggsave(
+  filename = "../results/Brodin/B_cell_marker_expression_and_proximity_by_condition.pdf",
+  width = 18,
+  height = 5
+)
+```
+

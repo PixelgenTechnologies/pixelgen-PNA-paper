@@ -2600,3 +2600,39 @@ plot_data %>%
   
 ```
 
+## Cell input vs output
+
+```{r}
+
+tibble(
+  expected = c(1000,
+               200,
+               1000,
+               200,
+               1000,
+               200),
+  actual = c(1082,
+             227,
+             1017,
+             195,
+             1080,
+             170)
+) |> 
+  ggplot(aes(x = expected, y = actual)) +
+  geom_point(size = 0.1) +
+  geom_abline(slope = 1, intercept = 0,
+              color = "gray") +
+  scale_x_continuous(limits = c(0, 1200), expand = expansion(0)) +
+  scale_y_continuous(limits = c(0, 1200), expand = expansion(0)) +
+  coord_fixed() +
+  theme_bw() +
+  labs(x = "Input cells",
+       y = "Output cells")
+ggsave(
+  filename = paste0(params$save_folder, "Input_vs_output_cells.pdf"),
+  width = 3,
+  height = 3
+)
+
+```
+

@@ -39,10 +39,10 @@ C. Visualization of marker organization on conjugates (anything that seems to lo
 #| echo: false
 
 library(here)
-here::i_am("APPNOTE0003c/scripts/analysis.qmd")
+here::i_am("car_t/scripts/analysis.qmd")
 
 # Load helper functions
-source(here("APPNOTE0003c/scripts/helpers.R"))
+source(here("car_t/scripts/helpers.R"))
 
 
 Pixelgen_accent_colors <-
@@ -102,18 +102,31 @@ library(ggbeeswarm)
 
 data_files <- c(
 
-    cart_cells_only_denoised_s1 = here("APPNOTE0003c/data_untracked/denoised/layout/layout/PNA065_CARTcells_S01_S1.layout.pxl"),
-    cart_raji_1to1_4hrs_denoised_s1 = here("APPNOTE0003c/data_untracked/denoised/layout/layout/PNA065_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
-    cart_raji_5to1_4hrs_denoised_s1 = here("APPNOTE0003c/data_untracked/denoised/layout/layout/PNA065_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
-    cart_raji_1to1_24hrs_denoised_s1 = here("APPNOTE0003c/data_untracked/denoised/layout/layout/PNA065_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
-    cart_raji_5to1_24hrs_denoised_s1 = here("APPNOTE0003c/data_untracked/denoised/layout/layout/PNA065_CARTcells_Raji_24hrs_5to1_S03_S6.layout.pxl"),
+    # cart_cells_only_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_S01_S1.layout.pxl"),
+    # cart_raji_1to1_4hrs_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
+    # cart_raji_5to1_4hrs_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
+    # cart_raji_1to1_24hrs_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
+    # cart_raji_5to1_24hrs_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_Raji_24hrs_5to1_S03_S6.layout.pxl"),
 
 
-    cart_cells_only_denoised_s2 = here("APPNOTE0003c/data_untracked/denoised_batch2/pxl_denoised/layout/PNA066_CARTcells_S01_S1.layout.pxl"),
-    cart_raji_1to1_4hrs_denoised_s2 = here("APPNOTE0003c/data_untracked/denoised_batch2/pxl_denoised/layout/PNA066_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
-    cart_raji_5to1_4hrs_denoised_s2 = here("APPNOTE0003c/data_untracked/denoised_batch2/pxl_denoised/layout/PNA066_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
-    cart_raji_1to1_24hrs_denoised_s2 = here("APPNOTE0003c/data_untracked/denoised_batch2/pxl_denoised/layout/PNA066_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
-    cart_raji_5to1_24hrs_denoised_s2 = here("APPNOTE0003c/data_untracked/denoised_batch2/pxl_denoised/layout/PNA066_CARTcells_Raji_24hrs_5to1_S06_S6.layout.pxl")
+    # cart_cells_only_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_S01_S1.layout.pxl"),
+    # cart_raji_1to1_4hrs_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
+    # cart_raji_5to1_4hrs_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
+    # cart_raji_1to1_24hrs_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
+    # cart_raji_5to1_24hrs_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_Raji_24hrs_5to1_S06_S6.layout.pxl")
+
+    cart_cells_only_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_S01_S1.layout.pxl"),
+    cart_raji_1to1_4hrs_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
+    cart_raji_5to1_4hrs_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
+    cart_raji_1to1_24hrs_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
+    cart_raji_5to1_24hrs_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_Raji_24hrs_5to1_S03_S6.layout.pxl"),
+
+
+    cart_cells_only_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_S01_S1.layout.pxl"),
+    cart_raji_1to1_4hrs_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
+    cart_raji_5to1_4hrs_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
+    cart_raji_1to1_24hrs_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
+    cart_raji_5to1_24hrs_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_Raji_24hrs_5to1_S06_S6.layout.pxl")
 
 
   )
@@ -150,9 +163,12 @@ pxl_all <- JoinLayers(pg_data_combined)
 #| echo: false
 
 # Add a new column called "molecules" to the object with the number of UMIs
-pxl_all$molecules <- pxl_all$n_umi
+#pxl_all$molecules <- pxl_all$n_umi
 # Plot the molecule rank plot
 (edgerank_plot <- MoleculeRankPlot(pxl_all, group_by = "condition") + geom_hline(yintercept = 10000, linetype = "dashed", color = "red"))
+
+(molecule_rank_plot <- MoleculeRankPlot(subset(pxl_all, condition == "cart_cells_only")) + theme_bw() + theme(aspect.ratio = 1) + labs(title = "CAR T Cells"))
+ggsave(here("car_t/output/molecule_rank_plot_cart_cells_only.pdf"), molecule_rank_plot, width = 4, height = 4)
 
 # Create a bar plot showing number of cells per condition
 (p <- pxl_all[[]] %>%  
@@ -226,7 +242,8 @@ DimPlot(pxl_data, reduction = "umap", group.by = "PNA_snn_res.0.01")
 pxl_data$manual_annotation <- case_when(
   pxl_data$PNA_snn_res.0.01 == 0 ~ "CD8",
   pxl_data$PNA_snn_res.0.01 == 1 ~ "Raji",
-  pxl_data$PNA_snn_res.0.01 == 2 ~ "CD4"
+  pxl_data$PNA_snn_res.0.01 == 2 ~ "CD4",
+  pxl_data$PNA_snn_res.0.01 == 3 ~ "CD8"
 )
 DimPlot(pxl_data, reduction = "umap", group.by = "manual_annotation")
 FeaturePlot(pxl_data, features = c("FMC63", "CD4", "CD8", "CD20"), reduction = "umap")
@@ -447,7 +464,7 @@ fmc63_markers <- ProximityScores(
   ) %>% 
     filter(count_1 > 100 & count_2 > 100) %>% 
     group_by(marker_1, marker_2) %>% 
-    filter(n() > 10) %>% 
+    filter(n() > 5) %>% 
     summarise(median_coloc = mean(log2_ratio),
               .groups = "drop") %>%  
     filter(marker_1 == "FMC63" | marker_2 == "FMC63") %>%  
@@ -461,7 +478,7 @@ coloc_net_fmc63_all <- ProximityScores(
   ) %>% 
     filter(count_1 > 100 & count_2 > 100) %>% 
     group_by(marker_1, marker_2) %>% 
-    filter(n() > 10) %>% 
+    filter(n() > 5) %>% 
     summarise(median_coloc = mean(log2_ratio),
               .groups = "drop") %>%  
     filter(marker_1 %in% fmc63_markers & marker_2 %in% fmc63_markers) %>%  
@@ -495,7 +512,7 @@ cd8_fmc63_seg <- ggraph(g, layout = "fr") +
         panel.background = element_rect(fill = "white"),
         panel.spacing = unit(1, "lines")) +
     ggtitle("FMC63 Negative Interaction Network - FMC63+ in CAR-T only")
-ggsave(here("APPNOTE0003c/output/fig1/fmc63_coloc_net_neg_same_scale_heatmap_cd8_only.pdf"), cd8_fmc63_seg, width = 10, height = 8)
+ggsave(here("car_t/output/networks/fmc63_coloc_net_neg_same_scale_heatmap_cd8_only.pdf"), cd8_fmc63_seg, width = 10, height = 8)
 
 ```
 
@@ -772,6 +789,9 @@ plot_marker_distributions <- function(seurat_obj, marker, facet_by = "subpopulat
   p_raw + p_norm
 }
 
+plot_marker_distributions(pxl_data_subset,"HLA-DQ", "subpopulation")
+plot_marker_distributions(pxl_data,"CD162", "manual_annotation")
+
 pxl_data_subset <- pxl_data %>%  subset(subpopulation != "other")
 for(m in rownames(pxl_data_subset)) {
   p <- plot_marker_distributions(pxl_data_subset, m, "subpopulation")
@@ -821,7 +841,7 @@ for (row_name in rownames(cd4_hm_data)) {
 }
 
 # Add a note to the row names to indicate these are now relative values
-rownames(cd4_hm_data)[1:2] <- paste0(rownames(cd4_hm_data)[1:2], " (rel. to baseline)")
+rownames(cd4_hm_data)[1:3] <- paste0(rownames(cd4_hm_data)[1:3], " (rel. to baseline)")
 
 # Clip values to -1 and 1
 cd4_hm_data[cd4_hm_data < -1] <- -1
@@ -833,7 +853,7 @@ cd4_abundance_hm <- ComplexHeatmap::pheatmap(as.matrix(cd4_hm_data),
                          cluster_cols = TRUE,
                          cellwidth = 10,
                          cellheight = 10)
-cd4_abundance_hm <- ggplotify::as.ggplot(cd4_abundance_hm) + ggtitle("CD4 Abundance Heatmap (no filter)")
+(cd4_abundance_hm <- ggplotify::as.ggplot(cd4_abundance_hm) + ggtitle("CD4 Abundance Heatmap (no filter)"))
 
 # CD4 densityplots
 markerplots <- list(
@@ -870,17 +890,29 @@ subtitle = combos)
 }
 
 # Cd8 Heatmap
-cd8_hm_data <- FetchData(pxl_data, vars = c("condition", "l1_annotation_summary", markers_cd8)) %>% 
+cd8_hm_data <- FetchData(pxl_data, vars = c("condition", "manual_annotation", markers_cd8)) %>% 
   filter(condition %in% c("cart_cells_only", "cart_raji_1to1_24hrs", "cart_raji_1to1_4hrs")) %>% 
-  filter(l1_annotation_summary == "CD8 T") %>% 
+  filter(manual_annotation == "CD8") %>% 
   pivot_longer(cols = all_of(markers_cd8), names_to = "marker", values_to = "expression") %>% 
-  group_by(condition, l1_annotation_summary, marker) %>% 
-  summarise(median_expression = median(expression), 
+  group_by(condition, manual_annotation, marker) %>% 
+  summarise(median_expression = mean(expression), 
             .groups = "drop") %>% 
   pivot_wider(names_from = marker, values_from = median_expression) %>%
-  select(-l1_annotation_summary) %>% 
+  select(-manual_annotation) %>% 
   column_to_rownames("condition")
 cd8_hm_data <- cd8_hm_data[c("cart_raji_1to1_24hrs", "cart_raji_1to1_4hrs", "cart_cells_only"),]
+
+cd8_abundance_hm_absolute_ph <- ComplexHeatmap::pheatmap(as.matrix(cd8_hm_data), 
+                         color = cols[6:11], 
+                         cluster_rows = FALSE, 
+                         cluster_cols = TRUE,
+                         cellwidth = 10,
+                         cellheight = 10)
+# Draw once so we can extract column order (ComplexHeatmap S4 requires draw() before column_order())
+ComplexHeatmap::draw(cd8_abundance_hm_absolute_ph)
+col_order_absolute <- ComplexHeatmap::column_order(cd8_abundance_hm_absolute_ph)
+(cd8_abundance_hm_absolute <- ggplotify::as.ggplot(cd8_abundance_hm_absolute_ph) + ggtitle("CD8 Abundance Heatmap (absolute)"))
+ggsave(here("car_t/output/cd8_abundance_hm_absolute.pdf"), cd8_abundance_hm_absolute, width = 16, height = 8)
 
 # Get the baseline values (cart_cells_only)
 baseline_values <- cd8_hm_data["cart_cells_only", ]
@@ -890,19 +922,22 @@ for (row_name in rownames(cd8_hm_data)) {
 }
 
 # Add a note to the row names to indicate these are now relative values
-rownames(cd8_hm_data)[1:2] <- paste0(rownames(cd8_hm_data)[1:2], " (rel. to baseline)")
+rownames(cd8_hm_data)[1:3] <- paste0(rownames(cd8_hm_data)[1:3], " (rel. to baseline)")
 
 # Clip values to -1 and 1
 cd8_hm_data[cd8_hm_data < -1] <- -1
 cd8_hm_data[cd8_hm_data > 1] <- 1
 
+# Use same column order as absolute heatmap (no re-clustering)
+cd8_hm_data <- cd8_hm_data[, col_order_absolute]
 cd8_abundance_hm <- ComplexHeatmap::pheatmap(as.matrix(cd8_hm_data), 
                          color = cols, 
                          cluster_rows = FALSE, 
-                         cluster_cols = TRUE,
+                         cluster_cols = FALSE,
                          cellwidth = 10,
                          cellheight = 10)
-cd8_abundance_hm <- ggplotify::as.ggplot(cd8_abundance_hm) + ggtitle("CD8 Abundance Heatmap (no filter)")
+(cd8_abundance_hm <- ggplotify::as.ggplot(cd8_abundance_hm) + ggtitle("CD8 Abundance Heatmap (no filter)"))
+ggsave(here("car_t/output/cd8_abundance_hm_relative_to_baseline.pdf"), cd8_abundance_hm, width = 16, height = 8)
 
 # CD8 densityplots
 markerplots <- list(
@@ -1013,7 +1048,7 @@ Visualize a T cell with shared and B cell specific markers in a patch.
 # For counts
 one_patch <- "cart_raji_1to1_24hrs_denoised_s1_4a149c203122b25e"
 
-pxl_data <- LoadPNACellGraphs(pxl_data, 
+pxl_data <- LoadCellGraphs(pxl_data, 
                       cells = one_patch, 
                       add_marker_counts = TRUE,
                       add_layouts = TRUE)
@@ -1086,6 +1121,100 @@ p_cd21 <- create_marker_plot(df_rotated, "CD21", k = 50, cutoff = 0.02, order = 
 p <- p_cd40 + p_cd21 + p_cd8 + p_cd54 + plot_layout(ncol = 2)
 ggsave(here(paste0("APPNOTE0003c/output/fig4/", one_patch, "_cd40_cd54_cd8_cd21_ordered.pdf")), p, width = 20, height = 20)
 ggsave(here(paste0("APPNOTE0003c/output/fig4/", one_patch, "_cd40_cd54_cd8_cd21_ordered.png")), p, width = 20, height = 20, dpi = 300)
+
+
+# USeGstarI
+
+xyz_one_patch_gi <- cg_one_patch@layout$wpmds_3d %>%
+    bind_cols(local_G(cg_one_patch@cellgraph, 
+              counts = cg_one_patch@counts, k = 5, type = "gstari", use_weights = FALSE) %>% as.matrix())
+
+df <- xyz_one_patch_gi
+df_rotated <- rearrr::rotate_3d(
+  as.data.frame(df),
+  x_col = "x",
+  y_col = "y",
+  z_col = "z",
+  x_deg = 0,
+  y_deg = 240,
+  z_deg = 0,
+  origin = c(0, 0, 0),
+  keep_original = TRUE
+)
+
+# CD40
+cd40_p <- df_rotated |>
+ #arrange(z_rotated) |>
+  mutate(CD40 = ifelse(CD40 > 4, 4 , CD40)) |>
+  mutate(CD40 = ifelse(CD40 < 2, 0, CD40)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD40, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+        scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+        scale_fill_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(), 
+       panel.background = element_rect(fill = "white")) +
+      ggtitle("CD40")
+
+
+# CD54
+cd54_p <- df_rotated |>
+ #arrange(z_rotated) |>
+  mutate(CD54 = ifelse(CD82 > 4, 4 , CD54)) |>
+  mutate(CD54 = ifelse(CD54 < 2, 0, CD54)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD54, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+        scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+        scale_fill_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(), 
+       panel.background = element_rect(fill = "white")) +
+      ggtitle("CD54")
+
+
+# CD8
+cd8_p <- df_rotated |>
+ #arrange(z_rotated) |>
+  mutate(CD8 = ifelse(CD8 > 4, 4 , CD8)) |>
+  mutate(CD8 = ifelse(CD8 < 2, 0, CD8)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD8, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+        scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+        scale_fill_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(), 
+       panel.background = element_rect(fill = "white")) +
+      ggtitle("CD8")
+      
+
+ cd54_p + cd40_p + cd8_p + plot_layout(ncol = 3)
+
+ggsave(here(paste0("car_t/output/fig4_alt/cd40_cd54_cd8_no_order.pdf")), cd54_p + cd40_p + cd8_p + plot_layout(ncol = 3), width = 20, height = 20)
+
+
+
+
 
 
 # For k-core - does this look similar to the euclidean distance? 
@@ -1374,7 +1503,7 @@ ggsave(paste0("APPNOTE0003c/output/patched_cells/patch_no/no_patch/fig3e_", no_p
 #| code-fold: true
 
 one_patch <- "cart_raji_1to1_4hrs_denoised_s1_fd2e3ea555e22238"
-pxl_data <- LoadPNACellGraphs(pxl_data, 
+pxl_data <- LoadCellGraphs(pxl_data, 
                       cells = one_patch, 
                       add_marker_counts = TRUE,
                       add_layouts = TRUE)
@@ -1436,7 +1565,7 @@ ggsave("APPNOTE0003c/output/patched_cells/patch_no/one_patch/fig3e_avg_neighbor_
 
 #two_patch <- "cart_raji_1to1_24hrs_denoised_cea7f037b763e3f1"
 two_patch <- "cart_raji_1to1_24hrs_denoised_s1_5ea4aea6c897507b"
-pxl_data <- LoadPNACellGraphs(pxl_data, 
+pxl_data <- LoadCellGraphs(pxl_data, 
                       cells = two_patch, 
                       add_marker_counts = TRUE,
                       add_layouts = TRUE)
@@ -1496,7 +1625,7 @@ ggsave("APPNOTE0003c/output/patched_cells/patch_no/two_patch/fig3e_avg_neighbor_
 #| code-fold: true
 
 three_patch <- "cart_raji_1to1_4hrs_denoised_s1_ed470f5afffa96c8"
-pxl_data <- LoadPNACellGraphs(pxl_data, 
+pxl_data <- LoadCellGraphs(pxl_data, 
                       cells = three_patch, 
                       add_marker_counts = TRUE,
                       add_layouts = TRUE)
@@ -1567,7 +1696,7 @@ patch_stats_list <- parallel::mclapply(cell_chunks, function(cell_chunk) {
   
   cli::cli_alert_info("Processing {length(cell_chunk)} cells...")
   
-  pxl_data <- LoadPNACellGraphs(pxl_data, 
+  pxl_data <- LoadCellGraphs(pxl_data, 
                       cells = cell_chunk, 
                       add_marker_counts = TRUE,
                       add_layouts = TRUE)
@@ -1579,7 +1708,7 @@ patch_stats_list <- parallel::mclapply(cell_chunks, function(cell_chunk) {
                       patch_markers = c("CD40", "CD20", "CD22"), 
                       k = 2L, 
                       leiden_resolution = 0.01, 
-                      patch_nodes_threshold = 200, 
+                      patch_nodes_threshold = 400, 
                       verbose = TRUE)
             return(p)
           }, error = function(e) {
@@ -1602,7 +1731,8 @@ patch_stats_list <- parallel::mclapply(cell_chunks, function(cell_chunk) {
 })
 
 res <- purrr::flatten(patch_stats_list)
-saveRDS(res, here("APPNOTE0003c/data_untracked/patch_stats_list.rds"))
+saveRDS(res, here("car_t/data/patch_stats_list_400.rds"))
+res <- readRDS("/Users/vincent/Desktop/Pixelgen/pixelgen-appnotes/APPNOTE0003c/data_untracked/patch_stats_list.rds")
 
 no_of_patches <- sapply(res, length)
 
@@ -1671,7 +1801,7 @@ patch_dist <- ggplot(patch_count_plot_data, aes(x = no_of_patches, y = percentag
             hjust = -0.1, color = "black") +
   labs(
     title = "Distribution of Patch Counts by Cell Type",
-    subtitle = "patch size > 200, resolution = 0.01",
+    subtitle = "patch size > 400, resolution = 0.01",
     x = "Number of Patches per Cell",
     y = "Percentage of Cells",
     fill = "Condition"
@@ -1699,9 +1829,88 @@ patch_dist <- ggplot(patch_count_plot_data, aes(x = no_of_patches, y = percentag
   scale_y_continuous(expand = c(0, 0.5)) +
  scale_x_continuous(breaks = c(0, 1, 2, 3, 4, 5),
                    labels = c("0", "1", "2", "3", "4", "4+"), expand = c(0.1, 0.1))
-ggsave(here("APPNOTE0003c/output/fig3/fig3e_patch_dist.pdf"), patch_dist, width = 10, height = 8)
+#ggsave(here("APPNOTE0003c/output/fig3/fig3e_patch_dist.pdf"), patch_dist, width = 10, height = 8)
+ggsave(here("car_t/output/patch_stability/patch_dist_400.pdf"), patch_dist, width = 10, height = 8)
 ```
 
+How stable are the conclusions regarding the number of patches?
+
+```{r}
+#| echo: false
+#| code-fold: true
+
+res_100 <- readRDS(here("car_t/data/patch_stats_list_100.rds"))
+res_200 <- readRDS("/Users/vincent/Desktop/Pixelgen/pixelgen-appnotes/APPNOTE0003c/data_untracked/patch_stats_list.rds")
+res_400 <- readRDS(here("car_t/data/patch_stats_list_400.rds"))
+
+
+no_of_patches_100 <- sapply(res_100, length)
+no_of_patches_200 <- sapply(res_200, length)
+no_of_patches_400 <- sapply(res_400, length)
+
+patch_no_list <- lapply(list(no_of_patches_100, no_of_patches_200, no_of_patches_400), function(x) {
+no_of_patches_df <- data.frame(no_of_patches = x) %>% 
+  rownames_to_column(var = "name") %>%  
+  # If no_of_patches is larger than 0, subtract 1
+  # This is likely because the first patch (patch 1) is the background/non-patch cells
+  mutate(no_of_patches = ifelse(no_of_patches > 0, no_of_patches - 1, no_of_patches)) %>%
+  # Add condition information for further analysis
+  left_join(cd8_cells, by = c("name" = "cell_id")) %>%  
+  mutate(no_of_patches = ifelse(no_of_patches > 4, 5, no_of_patches)) %>%
+  mutate(timepoint = case_when(
+    condition == "cart_cells_only" ~ "T cells alone",
+    condition == "cart_raji_1to1_24hrs" ~ "24h cocultured T cells",
+    condition == "cart_raji_1to1_4hrs" ~ "4h cocultured T cells",
+    TRUE ~ "other"
+  )) %>%  
+  filter(timepoint %in% c("T cells alone", "4h cocultured T cells", "24h cocultured T cells"))
+patch_count_plot_data <- no_of_patches_df %>%
+  group_by(group, no_of_patches, timepoint) %>%
+  summarise(count = n()) %>%
+  group_by(group, timepoint) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  filter(!(group == "other")) %>%
+  filter(timepoint %in% c("T cells alone", "4h cocultured T cells", "24h cocultured T cells")) %>%  
+  ungroup() %>%  
+  mutate(timepoint = factor(timepoint, levels = c("T cells alone", "4h cocultured T cells", "24h cocultured T cells")))
+# Create the plot
+# Calculate mean patches per group for annotation
+mean_patches_by_group <- patch_count_plot_data %>%
+  group_by(group, timepoint) %>%
+  summarize(mean_patches = sum(no_of_patches * percentage / 100)) |>
+  filter(group != "other")
+return(mean_patches_by_group)
+})
+
+patch_no_df <- bind_rows(patch_no_list, .id = "resolution")
+
+
+patch_robustness_plot <- patch_no_df %>%
+  mutate(
+    resolution_label = case_when(
+      resolution == "1" ~ "patch size > 100",
+      resolution == "2" ~ "patch size > 200",
+      resolution == "3" ~ "patch size > 400",
+      TRUE ~ "other"
+    )
+  ) %>%
+  filter(timepoint == "24h cocultured T cells") %>%
+  ggplot(aes(x = resolution_label, y = mean_patches, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(
+    values = c(
+      "CD8 CD25- CD279- [non responding]" = "lightgrey",
+      "CD8 CD25+ CD279- [activated]" = "darkgrey",
+      "CD8 CD25+ CD279+ [exhausted]" = "darkgreen"
+    )
+  ) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  labs(x = "Patch Size Threshold", y = "Mean Number of Patches", fill = "Group", title = "Mean Number of Patches for 24h Cocultured T Cells") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave(here("car_t/output/patch_stability/patch_robustness_plot.pdf"), patch_robustness_plot, width = 10, height = 8)
+```
 
 
 ```{r}
@@ -1731,4 +1940,78 @@ axis.line = element_blank()) +
 ggtitle(three_patch) + NoLegend()
 ggsave("APPNOTE0003c/output/patched_cells/patch_no/one_patch/fig3e_avg_neighbor_patch.pdf", test, width = 10, height = 10)
 
+```
+
+
+```{r}
+#| echo: false
+#| code-fold: true
+
+prox_scores <- ProximityScores(pxl_data, meta_data_columns = c("manual_annotation", "condition", "type"), add_marker_counts = TRUE)
+
+all_prox_scores_summary <- prox_scores %>% 
+    group_by(manual_annotation, condition, marker_1, marker_2) %>% 
+    summarise(
+      median_prox = median(log2_ratio),
+      mean_prox = mean(log2_ratio),
+      max_prox = max(log2_ratio),
+      min_prox = min(log2_ratio),
+      no_of_cells_with_prox_pct = 100 * sum(log2_ratio > 0) / n()
+    )
+all_prox_scores_summary$type <- "denoised"
+
+set_orders <- c(
+  "CD52",
+  "CD55",
+  "CD162",
+  "CD43",
+  "CD8",
+  "CD50",
+  "CD44",
+  "CD3e",
+  "CD26",
+  "CD11a",
+  "CD18",
+  "CD45",
+  "CD45RB",
+  "CD102",
+  "CD366",
+  "CD7",
+  "CD226",
+  "CD49e",
+  "CD29",
+  "CD2",
+  "CD5",
+  "CD6",
+  "CD40",
+  "CD54",
+  "HLA-DR",
+  "HLA-DR-DP-DQ",
+  "HLA-DQ",
+  "CD22",
+  "CD21",
+    "CD70",
+  "CD58",
+  "CD150",
+  "CD86",
+  "CD84",
+  "CD53",
+  "CD82",
+  "CD81",
+  "CD49D",
+  "CD156c",
+  "CD45RA",
+  "CD352",
+  "HLA-ABC",
+  "B2M",
+  "CD71",
+  "CD59",
+  "CD48"
+)
+
+p_co <- create_proximity_heatmap(all_prox_scores_summary, pxl_data, metric = "median_prox", cell_type_column = "manual_annotation", cell_type = "CD8", condition_name = "cart_raji_1to1_24hrs", denoising = "denoised", expr_threshold = 100, limit_values = 1, return_order = FALSE, set_order = set_orders)
+
+p_resting <- create_proximity_heatmap(all_prox_scores_summary, pxl_data, metric = "median_prox", cell_type_column = "manual_annotation", cell_type = "CD8", condition_name = "cart_cells_only", denoising = "denoised", expr_threshold = 100, limit_values = 1, return_order = FALSE, set_order = set_orders)
+
+ggsave(here("car_t/output/patch_coloc.pdf"), p_resting + p_co, width = 20, height = 8)
 ```

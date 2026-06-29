@@ -1,0 +1,1863 @@
+---
+title: "PNA Paper"
+date: today
+format: 
+  html:
+    code-fold: true
+    code-overflow: wrap
+    embed-resources: true
+toc: true
+execute:
+    message: false
+    warning: false
+    error: false
+    cache: true
+---
+
+Characterize the spatial landscape of Raji cells. This is part of the analysis for the pre-print of PNA data.
+
+# Setup
+
+Load helper functions
+
+```{r}
+#| label: setup
+
+library(here)
+here::i_am("scripts/the_one_script.qmd")
+
+# Load helper functions
+source(here("raji/scripts/helpers.R"))
+```
+
+Load libraries
+
+```{r}
+#| label: load-libraries
+
+library(tidyverse)
+library(patchwork)
+library(ggplotify)
+library(ggplot2)
+library(pixelatorR)
+library(pixelatorRinternal)
+library(ggbeeswarm)
+library(Seurat)
+library(ggraph)
+library(tidygraph)
+library(ComplexHeatmap)
+library(gridExtra)
+```
+
+Define color palette
+
+```{r}
+#| label: define-color-palette
+
+Pixelgen_accent_colors <-
+  tibble::tibble(
+    purples = c("#DED8F4", "#BFB3E9", "#A28EDB", "#866CCD", "#6C4ABD", "#5A3E9E", "#48327F"),
+    blues = c("#B9CDED", "#92B0E0", "#6D92D1", "#4A73C0", "#2955AE", "#224792", "#1C3A76"),
+    cyans = c("#D0EDE6", "#A2DACE", "#75C5B5", "#4AAF9D", "#209785", "#1B7E6F", "#156559"),
+    greens = c("#D7EBD3", "#AFD6A9", "#86C080", "#5EA857", "#369030", "#2D7828", "#246120"),
+    pinks = c("#F4DAEC", "#E7B7D7", "#DA94C1", "#CB73A9", "#BB5391", "#9C4579", "#7D3861"),
+    reds = c("#F7BFC4", "#EF9DA2", "#E67C81", "#DB5D61", "#CE4042", "#A53335", "#7C2628"),
+    oranges = c("#F6DBD4", "#EBB9AA", "#DE9982", "#D07B5B", "#C05F36", "#A04F2D", "#814024"),
+    yellows = c("#FCE6B4", "#F7D78C", "#F0C966", "#E6BB43", "#DAAC22", "#AE8A1B", "#836714")
+  )
+
+
+col_fun <- circlize::colorRamp2(
+  seq(from = -0.5, to = 0.5, length.out = 11),
+  c(
+    "#1F395F", 
+    "#496389", 
+    "#728BB1", 
+    "#AABAD1", 
+    "#DFE5EE", 
+    "#FFFFFF", 
+    "#FFE0EA", 
+    "#E9AABF", 
+    "#CD6F8D", 
+    "#A23F5E", 
+    "#781534")
+)
+
+cols_pos <-
+  c(
+    "#F5F5F5", 
+    "#FFE0EA", 
+    "#E9AABF", 
+    "#CD6F8D", 
+    "#A23F5E", 
+    "#781534")
+
+cols_neg <-
+  c(
+    "#F5F5F5", 
+    "#DFE5EE", 
+    "#AABAD1", 
+    "#728BB1", 
+    "#496389", 
+    "#1F395F")
+
+
+heatmap_gradient <-
+  colorRampPalette(
+    c("#1F395F", "#496389", "#728BB1", "#AABAD1", "#DFE5EE", "#FFFFFF",
+      "#FFE0EA", "#E9AABF", "#CD6F8D", "#A23F5E", "#781534"))
+
+cherry_gradient <-
+  colorRampPalette(
+    c("gray90", "#FFE0EA", "#E9AABF", "#CD6F8D", "#A23F5E", "#781534"))
+
+yes_no_palette <-
+  c("#DAD6D7", "#C86584")
+
+
+theme_default <-
+  function(base_size = 10) {
+    theme_bw(base_size = base_size) +
+      theme(axis.text.x = element_text(angle = 60, hjust = 1))
+  }
+
+pbmc_cell_type_palette <-
+  c(
+    "Naive CD4 T" = "#B9CDED",
+    "TCM CD4 T" = "#4A73C0",
+    "TEM CD4 T" = "#224792",
+    "Tregs" = "#1C3A76",
+    "Naive CD8 T" = "#D0EDE6",
+    "TCM CD8 T" = "#4AAF9D",
+    "TEM CD8 T" = "#1B7E6F",
+    "MAIT" = "#156559",
+    "CD56dim NK" = "#A28EDB",
+    "CD56bright NK" = "#866CCD",
+    "Naive B" = "#F0DAC4",
+    "Intermediate B" = "#C7A989",
+    "Memory B" = "#917557",
+    "mDC" = "#DA94C1",
+    "pDC" = "#BB5391",
+    "CD14 Mono" = "#E6BB43",
+    "CD16 Mono" = "#AE8A1B",
+    "Neutrophils" = "#CDCDCD",
+    "Basophils" = "#797979",
+    "Platelets" = "#7C2628",
+    "gdT" = "#5A3E9E"
+  )
+```
+
+# Figure 2
+
+## Load data
+
+Load PXL data
+
+```{r}
+#| label: load-pxl-data
+
+pxl_file_path <- here("raji/data_untracked/PNA062_Raji_1000cells_S06_S6.analysis.pxl")
+
+pg_data <- ReadPNA_Seurat(pxl_file_path)
+pg_data
+```
+
+# Filtering
+
+Filtering is not done here since the molecule cutoff is lower than the smallest component and the tau metric is not available yet. We will continue with the unfiltered data for now.
+
+# Abundance Normalization
+
+```{r}
+#| label: abundance-normalization
+
+pg_data <- Normalize(pg_data, method = "clr")
+```
+
+## Fig 2A: Colocalization Heatmap
+
+```{r}
+#| label: colocalization-heatmap-alternative
+
+
+DefaultAssay(pg_data) <- "PNA"
+clust_scores <- ProximityScores(
+    pg_data,
+    add_marker_counts = TRUE,
+    add_marker_proportions = TRUE
+)
+
+# define background threshold
+background_threshold <- median(pg_data$isotype_fraction) + 2 * mad(pg_data$isotype_fraction)
+
+# summarize scores
+proximity_summarized_log2 <- clust_scores |>
+    FilterProximityScores(background_threshold_pct = background_threshold) |>
+    SummarizeProximityScores(proximity_metric = "log2_ratio", summary_stat = "mean")
+
+# summarize join count p (for the detected cells - so zero excluded)
+join_count_p_summary <- clust_scores |>
+    FilterProximityScores(background_threshold_pct = background_threshold) |>
+    group_by(marker_1, marker_2) |>
+    summarize(
+        n = n(),
+        mean_join_count_p = mean(join_count_p)
+    )
+
+prox_scores_filtered_all <- proximity_summarized_log2 |>
+#    left_join(proximity_summarized_z |>
+ #       select(marker_1, marker_2, mean_join_count_z), by = c("marker_1", "marker_2")) |>
+    left_join(join_count_p_summary, by = c("marker_1", "marker_2"))
+
+pct_cutoff <- 0.3
+
+# 2. Select markers with high z-score
+sel_markers <- prox_scores_filtered_all |>
+        filter(pct_detected >= pct_cutoff) |>
+        group_by(marker_1) |>
+        summarize(max_log2_ratio = max(abs(mean_log2_ratio)))  |>
+        filter(max_log2_ratio >= 0.2) |>
+        pull(marker_1) |>
+        unique()
+
+# Selection of markers for the heatmap:
+# A protein pair was included only if (1) in at least 30% of cells, the less abundant
+# marker had UMI fraction above a detection threshold (median isotype fraction + 2×MAD
+# across the dataset). (2) A marker was kept in the heatmap only if it had at least one mean proximity
+# score (log2 ratio) ≥ 0.2.
+
+# Order of markers for the heatmap with CD21 relocated - determined after running for the first time. Not always necessary!
+new_order <- c("CD82", "CD20", "CD53", "CD81", "CD37", "CD19", "CD21", "CD58", "CD59", 
+"CD52", "CD55", "CD48", "CD79a", "IgM", "CD47", "CD180", "CD319", 
+"CD18", "CD137", "CD11a", "CD268", "CD80", "CD43", "CD102", "CD156c", 
+"CD54", "CD49D", "CD45RA", "CD45RB", "CD45", "CD40", 
+"CD32", "CD70", "CD86", "B2M", "CD352", "CD29", "CD72", "CD22", 
+"CD71", "CD150", "HLA-DR-DP-DQ", "HLA-ABC", "HLA-DR", "HLA-DQ"
+)
+
+# Select markers with high percentage of cells detected
+(hm1 <- ColocalizationHeatmap(
+    prox_scores_filtered_all |>
+        filter(pct_detected >= pct_cutoff) |>
+        filter(marker_1 %in% sel_markers) |>
+        filter(marker_2 %in% sel_markers) |>
+        mutate(marker_1 = factor(marker_1, levels = new_order),
+               marker_2 = factor(marker_2, levels = new_order)),
+    marker1_col = "marker_1",
+    marker2_col = "marker_2",
+    value_col = "mean_log2_ratio",
+    size_col = "mean_join_count_p",
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    colors = heatmap_gradient(100),
+    size_col_transform = \(x) -log10(x),
+    type = "dots",
+    size_range = c(5, 5),
+    legend_range = c(-0.5, 0.5)
+) + theme(axis.text.x = element_text(angle = 60, hjust = 0, vjust = 0),
+          axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0)) )
+
+p <- ggplot_build(hm1)
+p$data[[1]]$stroke <- NA
+
+q <- ggplot_gtable(p)
+q$grobs[[6]]$children[[1]]$children[[2]]$x <- unit(0, "npc")
+q$grobs[[6]]$children[[1]]$children[[3]]$x <- unit(0, "npc")
+
+
+pdf(here(glue::glue("raji/output/colocalization_heatmap_p_scaled_{pct_cutoff}.pdf")), width = 9, height = 9)
+plot(q)
+dev.off()
+```
+
+
+## Fig 2B: Colocalization Network
+
+```{r}
+#| label: colocalization-network
+
+
+marker_interactions <- prox_scores_filtered_all %>%  
+  filter(marker_1 %in% c("CD20", "CD19") | marker_2 %in% c("CD20", "CD19")) %>% 
+  filter(abs(mean_log2_ratio) > 0.1) %>%  
+  select(marker_1, marker_2) 
+marker_interactions <- unique(c(marker_interactions$marker_1, marker_interactions$marker_2))
+
+
+marker_interactions_pos <- prox_scores_filtered_all %>%  
+  filter(marker_1 %in% c("CD20", "CD19") | marker_2 %in% c("CD20", "CD19")) %>% 
+  filter(mean_log2_ratio > 0.1) %>%  
+  select(marker_1, marker_2) 
+marker_interactions_pos <- unique(c(marker_interactions_pos$marker_1, marker_interactions_pos$marker_2))
+
+interactions_pos <- prox_scores_filtered_all %>%  
+    filter(marker_1 %in% marker_interactions_pos & marker_2 %in% marker_interactions_pos) %>%   
+    filter(mean_log2_ratio > 0.1) %>%  
+    mutate(from = marker_1, to = marker_2)
+g <- as_tbl_graph(interactions_pos)
+g <- g %>%
+  activate(edges) %>%
+  mutate(group_from = ifelse(marker_1 %in% c("CD20", "CD19") | marker_2 %in% c("CD20", "CD19"), "marker", "other")) %>%  
+  mutate(mean_prox_score = ifelse(group_from == "marker", mean_log2_ratio, 0))
+coloc_pos <- ggraph(g, layout = "stress") +
+    geom_edge_link(aes(filter = group_from == "other", color = mean_prox_score), width = 0.5) +   
+    geom_edge_link(aes(filter = group_from == "marker", color = mean_prox_score), width = 2) +   
+    geom_node_label(
+        aes(label = name),
+        size = 4
+    ) +
+    geom_node_label(
+        aes(filter = name %in% c("CD20", "CD19"), label = name, fill = name),
+        size = 4, 
+        fill = "orange"
+    ) +
+    scale_edge_color_gradientn(
+        colours = cols_pos,
+        limits = c(0, 0.5)
+    ) +
+    theme(aspect.ratio = 1,
+        panel.background = element_rect(fill = "white"),
+        panel.spacing = unit(1, "lines")) +
+    ggtitle(glue::glue("CD19 and CD20 Interaction Network"))
+
+
+  ggsave(here(glue::glue("raji/output/marker_interactions/CD19_CD20.pdf")), coloc_pos, width = 10, height = 8)
+
+```
+
+
+## Figure 2C
+
+```{r}
+
+top10_positive_outliers <- ProximityScores(pg_data) |>
+  filter(marker_1 == "CD81" & marker_2 == "CD81") |>
+  arrange(desc(log2_ratio))  |>
+  slice(1:10) |>
+  pull(component)
+
+top10_negative_outliers <- ProximityScores(pg_data) |>
+  filter(marker_1 == "CD81" & marker_2 == "CD81") |>
+  arrange(log2_ratio)  |>
+  slice(1:10) |>
+  pull(component)
+
+# Show outliers
+DefaultAssay(pg_data) <- "PNA"
+clust_scores <- ProximityScores(
+    pg_data,
+    add_marker_counts = TRUE,
+    add_marker_proportions = TRUE
+) |>
+ filter(marker_1 == marker_2)
+
+
+cd40_dist <- clust_scores |>
+ filter(marker_1 == "CD40") |>
+ ggplot(aes(x = marker_1, y = log2_ratio)) +
+ geom_quasirandom(size = 0.05) +
+ theme_bw() +
+ ylim(-0.5, 3.5) +
+ labs(x = "CD40", y = "Log2 Ratio") +
+ theme(legend.position = "none",
+ aspect.ratio = 5,
+ axis.text.x = element_blank())
+
+
+cd54_dist <- clust_scores |>
+ filter(marker_1 == "CD54") |> 
+ ggplot(aes(x = marker_1, y = log2_ratio)) +
+ geom_quasirandom(size = 0.05) +
+ theme_bw() +
+ ylim(-0.5, 3.5) +
+ labs(x = "CD54", y = "Log2 Ratio") +
+ theme(legend.position = "none",
+ aspect.ratio = 5,
+ axis.text.x = element_blank())
+
+# Annotate outlier type for CD81 (positive/negative outliers and others)
+cd81_outlier_annot <- clust_scores |>
+  filter(marker_1 == "CD81") |>
+  mutate(
+    outlier_type = case_when(
+      component %in% top10_positive_outliers ~ "Top 10 Positive",
+      component %in% top10_negative_outliers ~ "Top 10 Negative",
+      TRUE ~ "Other"
+    ),
+    outlier_type = factor(outlier_type, levels = c("Other", "Top 10 Positive", "Top 10 Negative"))
+  )
+
+cd81_dist <- ggplot(cd81_outlier_annot, aes(x = marker_1, y = log2_ratio, color = outlier_type)) +
+  # Plot non-outliers first for better layering
+  geom_quasirandom(
+    data = . %>% filter(outlier_type == "Other"),
+    size = 0.5,
+    alpha = 0.5
+  ) +
+  # Highlight outliers with larger, brighter points
+  geom_quasirandom(
+    data = . %>% filter(outlier_type != "Other"),
+    size = 2,
+    alpha = 0.9,
+    width = 0.1
+  ) +
+  theme_bw() +
+  ylim(-0.5, 3.5) +
+  scale_color_manual(
+    values = c(
+      "Other" = "gray70",
+      "Top 10 Positive" = "#A23F5E",
+      "Top 10 Negative" = "#496389"
+    ),
+    name = "Outlier Type"
+  ) +
+  labs(x = "CD81", y = "Log2 Ratio") +
+  theme(
+    legend.position = "none",
+    aspect.ratio = 5,
+    axis.text.x = element_blank()
+  )
+
+cd40_dist + cd54_dist + cd81_dist + plot_layout(ncol = 3)
+```
+
+## Supplement Figure 5D: Outlier Characterization
+
+```{r}
+#| label: outlier-characterization
+
+p1 <- pg_data[[]] |>
+  # Add component ID from rownames for matching with outliers
+  tibble::rownames_to_column("component") |>
+  # Add outlier labels to identify top 10 positive and negative outliers
+  mutate(
+    outlier_type = case_when(
+      component %in% top10_positive_outliers ~ "Top 10 Positive",
+      component %in% top10_negative_outliers ~ "Top 10 Negative",
+      TRUE ~ "Other"
+    ),
+    # Convert to factor with specific order for legend
+    outlier_type = factor(outlier_type, levels = c("Other", "Top 10 Positive", "Top 10 Negative"))
+  ) |>
+  ggplot(aes(x = 1, y = n_umi, color = outlier_type)) +
+  # Create beeswarm plot - all points jittered horizontally
+  # Plot non-outliers first
+  geom_beeswarm(
+    data = . %>% filter(outlier_type == "Other"),
+    size = 0.8,
+    alpha = 0.6,
+    cex = 0.8
+  ) +
+  # Highlight outliers with larger, more opaque points
+  geom_beeswarm(
+    data = . %>% filter(outlier_type != "Other"),
+    size = 3,
+    alpha = 0.9,
+    cex = 0.8
+  ) +
+  # Set color scheme: gray for others, red for positive outliers, blue for negative outliers
+  scale_color_manual(
+    values = c(
+      "Other" = "gray70",
+      "Top 10 Positive" = "#A23F5E",  # Using red from color palette
+      "Top 10 Negative" = "#496389"   # Using blue from color palette
+    ),
+    name = "Outlier Type"
+  ) +
+  # Add summary statistics
+  stat_summary(
+    fun = median,
+    geom = "crossbar",
+    width = 0.3,
+    color = "black",
+    linewidth = 0.5,
+    show.legend = FALSE
+  ) +
+  # Labels and theme
+  labs(
+    x = "",
+    y = "Number of Molecules per Cell",
+    title = "Molecules per Cell Distribution"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.title.y = element_text(size = 14),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 13)
+  )
+
+
+
+p2 <- pg_data[[]] |>
+  # Add component ID from rownames for matching with outliers
+  tibble::rownames_to_column("component") |>
+  # Add outlier labels to identify top 10 positive and negative outliers
+  mutate(
+    outlier_type = case_when(
+      component %in% top10_positive_outliers ~ "Top 10 Positive",
+      component %in% top10_negative_outliers ~ "Top 10 Negative",
+      TRUE ~ "Other"
+    ),
+    # Convert to factor with specific order for legend
+    outlier_type = factor(outlier_type, levels = c("Other", "Top 10 Positive", "Top 10 Negative"))
+  ) |>
+  ggplot(aes(x = 1, y = average_k_core, color = outlier_type)) +
+  # Create beeswarm plot - all points jittered horizontally
+  # Plot non-outliers first
+  geom_beeswarm(
+    data = . %>% filter(outlier_type == "Other"),
+    size = 0.8,
+    alpha = 0.6,
+    cex = 0.8
+  ) +
+  # Highlight outliers with larger, more opaque points
+  geom_beeswarm(
+    data = . %>% filter(outlier_type != "Other"),
+    size = 3,
+    alpha = 0.9,
+    cex = 0.8
+  ) +
+  # Set color scheme: gray for others, red for positive outliers, blue for negative outliers
+  scale_color_manual(
+    values = c(
+      "Other" = "gray70",
+      "Top 10 Positive" = "#A23F5E",  # Using red from color palette
+      "Top 10 Negative" = "#496389"   # Using blue from color palette
+    ),
+    name = "Outlier Type"
+  ) +
+  # Add summary statistics
+  stat_summary(
+    fun = median,
+    geom = "crossbar",
+    width = 0.3,
+    color = "black",
+    linewidth = 0.5,
+    show.legend = FALSE
+  ) +
+  # Labels and theme
+  labs(
+    x = "",
+    y = "Average K-core",
+    title = "K-core Distribution"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.title.y = element_text(size = 14),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 13)
+  )
+
+
+
+p3 <- pg_data[[]] |>
+  # Add component ID from rownames for matching with outliers
+  tibble::rownames_to_column("component") |>
+  # Add outlier labels to identify top 10 positive and negative outliers
+  mutate(
+    outlier_type = case_when(
+      component %in% top10_positive_outliers ~ "Top 10 Positive",
+      component %in% top10_negative_outliers ~ "Top 10 Negative",
+      TRUE ~ "Other"
+    ),
+    # Convert to factor with specific order for legend
+    outlier_type = factor(outlier_type, levels = c("Other", "Top 10 Positive", "Top 10 Negative"))
+  ) |>
+  ggplot(aes(x = 1, y = reads_in_component, color = outlier_type)) +
+  # Create beeswarm plot - all points jittered horizontally
+  # Plot non-outliers first
+  geom_beeswarm(
+    data = . %>% filter(outlier_type == "Other"),
+    size = 0.8,
+    alpha = 0.6,
+    cex = 0.8
+  ) +
+  # Highlight outliers with larger, more opaque points
+  geom_beeswarm(
+    data = . %>% filter(outlier_type != "Other"),
+    size = 3,
+    alpha = 0.9,
+    cex = 0.8
+  ) +
+  # Set color scheme: gray for others, red for positive outliers, blue for negative outliers
+  scale_color_manual(
+    values = c(
+      "Other" = "gray70",
+      "Top 10 Positive" = "#A23F5E",  # Using red from color palette
+      "Top 10 Negative" = "#496389"   # Using blue from color palette
+    ),
+    name = "Outlier Type"
+  ) +
+  # Add summary statistics
+  stat_summary(
+    fun = median,
+    geom = "crossbar",
+    width = 0.3,
+    color = "black",
+    linewidth = 0.5,
+    show.legend = FALSE
+  ) +
+  # Labels and theme
+  labs(
+    x = "",
+      y = "Reads in Component",
+    title = "Reads in Component Distribution"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.title.y = element_text(size = 14),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 13)
+  )
+
+p1 + p2 + p3 + plot_layout(nrow = 1, guides = "collect") & 
+  theme(legend.position = "bottom")
+```
+
+# Figure 2E
+
+```{r}
+#| label: figure-2e
+
+# DAta with precomputed layouts
+# pxl_file_path <- here("raji/data_untracked/PNA062_Raji_1000cells_S06_S6_1017.layout.pxl")
+# pg_data <- ReadPNA_Seurat(pxl_file_path)
+# pg_data
+
+# pg_data <- Normalize(pg_data, method = "clr")
+ 
+cols <- c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")
+
+cells <- c("85ca4e1d0a157c34", "bf6cd1e1759f9119", "d5181e10a0d98ec9")
+
+pg_data <- LoadCellGraphs(
+  pg_data,
+  cells = cells,
+  add_marker_counts = TRUE,
+  add_layouts = TRUE
+)
+
+cg_list <- CellGraphs(pg_data)[cells]
+
+cg_list <- lapply(cg_list, function(cg) {
+  CellGraphData(cg, "layout")$wpmds_3d %>%
+    bind_cols(local_G(CellGraphData(cg, "cellgraph"), 
+              counts = CellGraphData(cg, "counts"), k = 5, type = "gstari", use_weights = FALSE) %>% as.matrix())
+})
+
+cg_list <- lapply(cg_list, function(pldat) {
+pldat_rotated <- rearrr::rotate_3d(
+  as.data.frame(pldat),
+  x_col = "x",
+  y_col = "y",
+  z_col = "z",
+  x_deg = 0,
+  y_deg = 0,
+  z_deg = 0,
+  origin = c(0, 0, 0),
+  keep_original = TRUE,
+  overwrite = TRUE
+)
+})
+
+# CD40
+cd40_p <- cg_list[[1]] |>
+ arrange(z_rotated) |>
+ mutate(CD40 = ifelse(CD40 > 4, 4 , CD40)) |>
+ mutate(CD40 = ifelse(CD40 < 0, 0, CD40)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD40, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+ scale_color_gradientn(colours = c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")) +
+ scale_fill_gradientn(colours = c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(), 
+       panel.background = element_rect(fill = "white")) +
+       ggtitle("CD40")
+
+# CD54
+cd54_p <- cg_list[[2]] |>
+ arrange(z_rotated) |>
+ mutate(CD54 = ifelse(CD54 > 5, 5, CD54)) |>
+ mutate(CD54 = ifelse(CD54 < 1.5, 1.5, CD54)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD54, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+ scale_color_gradientn(colours = c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")) +
+ scale_fill_gradientn(colours = c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       panel.background = element_rect(fill = "white")) +
+       ggtitle("CD54")
+
+# CD81
+cg_list[[3]] <- rearrr::rotate_3d(
+  as.data.frame(cg_list[[3]]),
+  x_col = "x",
+  y_col = "y",
+  z_col = "z",
+  x_deg = 0,
+  y_deg = 60,
+  z_deg = 0,
+  origin = c(0, 0, 0),
+  keep_original = TRUE,
+  overwrite = TRUE
+)
+cd81_p <- cg_list[[3]] |>
+arrange(z_rotated) |>
+ mutate(CD81 = ifelse(CD81 > 4, 4, CD81)) |>
+ mutate(CD81 = ifelse(CD81 < 1.5, 1.5, CD81)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD81, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+ scale_color_gradientn(colours = c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")) +
+ scale_fill_gradientn(colours = c("#F2F2F2", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       panel.background = element_rect(fill = "white")) +
+       ggtitle("CD81")
+
+
+lays <- cd40_p + cd54_p + cd81_p + plot_layout(ncol = 3)
+lays
+```
+
+
+# Figure 4
+
+## Load data
+
+```{r}
+#| label: load data
+#| cache-lazy: false
+
+data_files <- c(
+
+    # cart_cells_only_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_S01_S1.layout.pxl"),
+    # cart_raji_1to1_4hrs_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
+    # cart_raji_5to1_4hrs_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
+    # cart_raji_1to1_24hrs_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
+    # cart_raji_5to1_24hrs_denoised_s1 = here("car_t/data/full/PNA065_CARTcells_Raji_24hrs_5to1_S03_S6.layout.pxl"),
+
+
+    # cart_cells_only_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_S01_S1.layout.pxl"),
+    # cart_raji_1to1_4hrs_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
+    # cart_raji_5to1_4hrs_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
+    # cart_raji_1to1_24hrs_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
+    # cart_raji_5to1_24hrs_denoised_s2 = here("car_t/data/full/PNA066_CARTcells_Raji_24hrs_5to1_S06_S6.layout.pxl")
+
+    cart_cells_only_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_S01_S1.layout.pxl"),
+    cart_raji_1to1_4hrs_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
+    cart_raji_5to1_4hrs_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
+    cart_raji_1to1_24hrs_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
+    cart_raji_5to1_24hrs_denoised_s1 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA065_CARTcells_Raji_24hrs_5to1_S03_S6.layout.pxl"),
+
+
+    cart_cells_only_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_S01_S1.layout.pxl"),
+    cart_raji_1to1_4hrs_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_Raji_4hrs_1to1_S02_S2.layout.pxl"),
+    cart_raji_5to1_4hrs_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_Raji_4hrs_5to1_S03_S3.layout.pxl"),
+    cart_raji_1to1_24hrs_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_Raji_24hrs_1to1_S05_S5.layout.pxl"),
+    cart_raji_5to1_24hrs_denoised_s2 = here("/Volumes/T9/Vincent/pixelgen-PNA-paper/car_t/data/denoised/analysis/PNA066_CARTcells_Raji_24hrs_5to1_S06_S6.layout.pxl")
+
+
+  )
+
+# Read PXL files as a list of Seurat objects
+pg_data_combined <- lapply(data_files, ReadPNA_Seurat)
+
+
+# Combine files into a single Seurat object
+pg_data_combined <- 
+  merge(pg_data_combined[[1]],
+        y = pg_data_combined[-1],
+        add.cell.ids = names(pg_data_combined)) 
+
+
+# Add meta data describing the sample and donor origin
+pg_data_combined <- 
+  AddMetaData(pg_data_combined, 
+              metadata = data.frame(id = colnames(pg_data_combined)) %>% 
+                mutate(
+                        condition = str_remove(gsub(".{17}$", "", id), "_denoised_s1|_denoised_s2"),
+                        type = str_extract(id, "full|denoised|removed")
+                      ) %>% 
+                column_to_rownames("id"))
+
+# Join Layers
+pxl_all <- JoinLayers(pg_data_combined)
+```
+
+## Figure 4D
+
+```{r}
+#| label: inspect-data
+
+# Filter out cells with less than 10000 UMIs
+pxl_data <- subset(pxl_all, n_umi > 10000) 
+
+# Normalize the data
+pxl_data <- NormalizeData(object = pxl_data,
+               normalization.method = "CLR",
+               margin = 2,
+               assay = "PNA")
+
+DefaultAssay(pxl_data) <- "PNA"
+pxl_data <-
+  pxl_data %>%
+  #FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(npcs = 10, features = c("CD3e", "CD4", "CD8", "FMC63", "CD45", "CD70", "CD45RO", "CD244", "CD278", "CD314", "CD337", "CD336", "CD20", "CD25", "CD279", "CD40", "CD54", "IgM", "CD21", "CD22")) %>%
+  #RunPCA(npcs = 10) %>%
+  RunUMAP(dims = 1:10)
+
+pxl_data <-
+  pxl_data %>%
+  # Create SNN graph
+  FindNeighbors(dims = 1:2, reduction = "umap") %>%
+  # Find communities (clusters) of cells in SNN graph
+  FindClusters(random.seed = 1,
+                resolution = c(0.01, 0.25, 0.5, 1))
+DimPlot(pxl_data, reduction = "umap", group.by = "PNA_snn_res.0.01")
+
+
+pxl_data$manual_annotation <- case_when(
+  pxl_data$PNA_snn_res.0.01 == 0 ~ "CD8",
+  pxl_data$PNA_snn_res.0.01 == 1 ~ "Raji",
+  pxl_data$PNA_snn_res.0.01 == 2 ~ "CD4",
+  pxl_data$PNA_snn_res.0.01 == 3 ~ "CD8"
+)
+
+# Add annotations
+pxl_data$timepoint <- case_when(
+  grepl("24hrs", pxl_data$condition) ~ "24h",
+  grepl("4hrs", pxl_data$condition) ~ "4h",
+  TRUE ~ "CAR T only"
+)
+
+pxl_data$ratio <- case_when(
+  grepl("1to1", pxl_data$condition) ~ "1:1",
+  grepl("1to5", pxl_data$condition) ~ "1:5",
+  TRUE ~ "CAR T only"
+)
+
+pxl_data$alternative_annotation <- case_when(
+  grepl("Raji", pxl_data$manual_annotation) ~ "Raji",
+  grepl("CD4", pxl_data$manual_annotation) & grepl("4h|24h", pxl_data$timepoint) ~ "CD4 coculture",
+  grepl("CD8", pxl_data$manual_annotation) & grepl("4h|24h", pxl_data$timepoint) ~ "CD8 coculture",
+  grepl("CD4", pxl_data$manual_annotation) & grepl("CAR T only", pxl_data$timepoint) ~ "CD4 CAR T only",
+  grepl("CD8", pxl_data$manual_annotation) & grepl("CAR T only", pxl_data$timepoint) ~ "CD8 CAR T only",
+  TRUE ~ "other"
+)
+
+# Create UMAPPlot
+pxl_data <-
+  pxl_data %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(npcs = 10) %>%
+  RunUMAP(dims = 1:10, spread = 2, min.dist = 1)
+(pre_integration_umap <- DimPlot(pxl_data, reduction = "umap", group.by = "timepoint", shuffle = TRUE) + theme(aspect.ratio = 1))
+
+
+umaplist <- list()
+for (marker in c("CD54", "CD70", "CD37", "HLA-DR-DP-DQ")) {
+
+umap_plot <-pxl_data@reductions$umap@cell.embeddings %>%
+      as.data.frame() %>% 
+      tibble::rownames_to_column("component") %>% 
+      left_join(FetchData(pxl_data, vars = c("condition", "CD54", "CD70", "CD37", "HLA-DR-DP-DQ", "CD3e", "CD4", "CD8", "timepoint", "alternative_annotation")) %>%  
+      rownames_to_column("component"), by = c("component" = "component")) %>%
+      #filter(!(alternative_annotation == "Raji" & umap_1 < 10)) %>% 
+      arrange(!!sym(marker)) %>% 
+      ggplot(aes(x = umap_1, y = umap_2, color = !!sym(marker))) +
+      geom_point(size = 3) +
+      theme_bw() +
+      theme(aspect.ratio = 1,
+          axis.text.x = element_text(size = 16),
+          axis.text.y = element_text(size = 16),
+          axis.title.x = element_text(size = 16),
+          axis.title.y = element_text(size = 16),
+          panel.grid = element_blank()) +
+      scale_color_gradientn( colours = c("white", "#1C3A76")) +
+      ggtitle(marker)
+umaplist[[marker]] <- umap_plot
+
+}
+
+umaplist$CD54
+```
+
+## Figure 4B
+
+```{r}
+#| label: figure-4b
+
+
+cols_pos <-
+  c(
+    "#F5F5F5", 
+    "#FFE0EA", 
+    "#E9AABF", 
+    "#CD6F8D", 
+    "#A23F5E", 
+    "#781534")
+
+cols_neg <-
+  c(
+    "#F5F5F5", 
+    "#DFE5EE", 
+    "#AABAD1", 
+    "#728BB1", 
+    "#496389", 
+    "#1F395F")
+
+
+pxl_cart_fmc63 <- subset(pxl_data, FMC63 > 2)
+pxl_cart_fmc63 <- pxl_cart_fmc63 %>% 
+      subset(subset = manual_annotation == "CD8") %>%  
+      subset(subset = condition == "cart_cells_only")
+median_cts <- FetchData(pxl_cart_fmc63, vars = rownames(pxl_cart_fmc63), layer = "counts") %>%
+  pivot_longer(cols = everything(), names_to = "marker", values_to = "count") %>%
+  group_by(marker) %>%
+  summarise(median_count = median(count),
+            .groups = "drop")
+
+fmc63_markers <- ProximityScores(
+    pxl_cart_fmc63,
+    add_marker_counts = TRUE
+  ) %>% 
+    filter(count_1 > 100 & count_2 > 100) %>% 
+    group_by(marker_1, marker_2) %>% 
+    filter(n() > 5) %>% 
+    summarise(median_coloc = mean(log2_ratio),
+              .groups = "drop") %>%  
+    filter(marker_1 == "FMC63" | marker_2 == "FMC63") %>%  
+    filter(median_coloc > 0.1)
+fmc63_markers <- unique(c(fmc63_markers %>% pull(marker_1), fmc63_markers %>% pull(marker_2)))
+
+# FMC63
+coloc_net_fmc63_all <- ProximityScores(
+    pxl_cart_fmc63,
+    add_marker_counts = TRUE
+  ) %>% 
+    filter(count_1 > 100 & count_2 > 100) %>% 
+    group_by(marker_1, marker_2) %>% 
+    filter(n() > 5) %>% 
+    summarise(median_coloc = mean(log2_ratio),
+              .groups = "drop") %>%  
+    filter(marker_1 %in% fmc63_markers & marker_2 %in% fmc63_markers) %>%  
+    filter(median_coloc > 0.1) %>%  
+    mutate(median_coloc = ifelse(median_coloc > 3, 3, median_coloc)) %>%  
+    mutate(from = marker_1, to = marker_2)
+
+g <- as_tbl_graph(coloc_net_fmc63_all)
+g <- g %>%
+  activate(edges) %>%
+  mutate(group_from = ifelse(marker_1 == "FMC63" | marker_2 == "FMC63", "FMC63", "other")) %>%  
+  mutate(median_coloc = ifelse(group_from == "FMC63", median_coloc, 0))
+
+cd8_fmc63_coloc <- ggraph(g) +
+    geom_edge_link(aes(filter = group_from == "other", color = median_coloc), width = 1.5) +   
+    geom_edge_link(aes(filter = group_from == "FMC63", color = median_coloc), width = 2) +   
+    geom_node_label(
+        aes(label = name),
+        size = 4
+    ) +
+    geom_node_label(
+        aes(filter = name == "FMC63", label = name, fill = "FMC63"),
+        size = 4, 
+        fill = "orange"
+    ) +
+    scale_edge_color_gradientn(
+        colours = cols_pos,
+        limits = c(0,0.35)
+    ) +
+    theme(aspect.ratio = 1,
+        panel.background = element_rect(fill = "white"),
+        panel.spacing = unit(1, "lines")) +
+    ggtitle("FMC63 Positive Interaction Network - FMC63+ in CAR-T only")
+
+cd8_fmc63_coloc
+```
+
+## Figure 4C
+
+```{r}
+#| label: figure-4c
+
+fmc63_markers <- ProximityScores(
+    pxl_cart_fmc63,
+    add_marker_counts = TRUE
+  ) %>% 
+    filter(count_1 > 100 & count_2 > 100) %>% 
+    group_by(marker_1, marker_2) %>% 
+    filter(n() > 5) %>% 
+    summarise(median_coloc = mean(log2_ratio),
+              .groups = "drop") %>%  
+    filter(marker_1 == "FMC63" | marker_2 == "FMC63") %>%  
+    filter(median_coloc < -0.15)
+fmc63_markers <- unique(c(fmc63_markers %>% pull(marker_1), fmc63_markers %>% pull(marker_2)))
+
+# FMC63
+coloc_net_fmc63_all <- ProximityScores(
+    pxl_cart_fmc63,
+    add_marker_counts = TRUE
+  ) %>% 
+    filter(count_1 > 100 & count_2 > 100) %>% 
+    group_by(marker_1, marker_2) %>% 
+    filter(n() > 5) %>% 
+    summarise(median_coloc = mean(log2_ratio),
+              .groups = "drop") %>%  
+    filter(marker_1 %in% fmc63_markers & marker_2 %in% fmc63_markers) %>%  
+    filter(median_coloc < -0.15) %>%  
+    mutate(median_coloc = ifelse(median_coloc < -0.5, -0.5, median_coloc)) %>%  
+    mutate(from = marker_1, to = marker_2)
+
+g <- as_tbl_graph(coloc_net_fmc63_all)
+g <- g %>%
+  activate(edges) %>%
+  mutate(group_from = ifelse(marker_1 == "FMC63" | marker_2 == "FMC63", "FMC63", "other")) %>%  
+  mutate(median_coloc = ifelse(group_from == "FMC63", median_coloc, 0))
+
+cd8_fmc63_seg <- ggraph(g, layout = "fr") +
+    geom_edge_link(aes(filter = group_from == "other", color = median_coloc), width = 1.5) +   
+    geom_edge_link(aes(filter = group_from == "FMC63", color = median_coloc), width = 2) +   
+    geom_node_label(
+        aes(label = name),
+        size = 3
+    ) +
+    geom_node_label(
+        aes(filter = name == "FMC63", label = name, fill = "FMC63"),
+        size = 3, 
+        fill = "orange"
+    ) +
+    scale_edge_color_gradientn(
+        colours = rev(cols_neg),
+        limits = c(-0.5,0)
+    ) +
+    theme(aspect.ratio = 1,
+        panel.background = element_rect(fill = "white"),
+        panel.spacing = unit(1, "lines")) +
+    ggtitle("FMC63 Negative Interaction Network - FMC63+ in CAR-T only")
+cd8_fmc63_seg
+
+```
+
+## Figure 4E
+
+```{r}
+#| label: figure-4e
+
+source("/Users/vincent/Desktop/Pixelgen/pixelgen-PNA-paper/car_t/scripts/helpers.R")
+
+one_patch <- "cart_raji_1to1_24hrs_denoised_s1_4a149c203122b25e"
+
+pxl_data <- LoadCellGraphs(pxl_data, 
+                      cells = one_patch, 
+                      add_marker_counts = TRUE,
+                      add_layouts = TRUE)
+cg_one_patch <- CellGraphs(pxl_data)[[one_patch]]
+
+xyz_one_patch_gi <- cg_one_patch@layout$wpmds_3d %>%
+    bind_cols(local_G(cg_one_patch@cellgraph, 
+              counts = cg_one_patch@counts, k = 5, type = "gstari", use_weights = FALSE) %>% as.matrix())
+
+df <- xyz_one_patch_gi
+df_rotated <- rearrr::rotate_3d(
+  as.data.frame(df),
+  x_col = "x",
+  y_col = "y",
+  z_col = "z",
+  x_deg = 0,
+  y_deg = 240,
+  z_deg = 0,
+  origin = c(0, 0, 0),
+  keep_original = TRUE
+)
+
+# CD40
+cd40_p <- df_rotated |>
+ #arrange(z_rotated) |>
+  mutate(CD40 = ifelse(CD40 > 4, 4 , CD40)) |>
+  mutate(CD40 = ifelse(CD40 < 2, 0, CD40)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD40, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+        scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+        scale_fill_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(), 
+       panel.background = element_rect(fill = "white")) +
+      ggtitle("CD40")
+
+
+# CD54
+cd54_p <- df_rotated |>
+ #arrange(z_rotated) |>
+  mutate(CD54 = ifelse(CD82 > 4, 4 , CD54)) |>
+  mutate(CD54 = ifelse(CD54 < 2, 0, CD54)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD54, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+        scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+        scale_fill_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(), 
+       panel.background = element_rect(fill = "white")) +
+      ggtitle("CD54")
+
+
+# CD8
+cd8_p <- df_rotated |>
+ #arrange(z_rotated) |>
+  mutate(CD8 = ifelse(CD8 > 4, 4 , CD8)) |>
+  mutate(CD8 = ifelse(CD8 < 2, 0, CD8)) |>
+ ggplot(aes(x = x_rotated, y = y_rotated, fill = CD8, alpha = 0.9)) +
+ ggrastr::geom_point_rast(shape = 21, stroke = 0.01, size = 1, raster.dpi = 300) +
+        scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+        scale_fill_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+ theme_bw() +
+ theme(legend.position = "none",
+       aspect.ratio = 1,
+       axis.text = element_blank(),
+       axis.title = element_blank(),
+       axis.ticks = element_blank(),
+       axis.line = element_blank(),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(), 
+       panel.background = element_rect(fill = "white")) +
+      ggtitle("CD8")
+      
+
+ cd54_p + cd40_p + cd8_p + plot_layout(ncol = 3)
+
+
+```
+
+## Figure 4F
+
+```{r}
+#| label: figure-4f
+
+# Get cells of interest
+cd8_cells <- FetchData(pxl_data, vars = c("manual_annotation", "condition", "CD25", "CD279")) %>% 
+  filter(manual_annotation == "CD8") %>% 
+  mutate(group = case_when(
+  CD25 < 1.5 & CD279 < 1.5 ~ "CD8 CD25- CD279- [non responding]",
+  CD25 > 1.5 & CD279 < 1.5 ~ "CD8 CD25+ CD279- [activated]",
+  CD25 > 1.5 & CD279 > 1.5 ~ "CD8 CD25+ CD279+ [exhausted]",
+  TRUE ~ "other"
+)) %>%  rownames_to_column(var = "cell_id")
+
+# # Calculate cell graphs
+# cell_chunks <- split(cd8_cells$cell_id, ceiling(seq_along(cd8_cells$cell_id)/50))
+# patch_stats_list <- parallel::mclapply(cell_chunks, function(cell_chunk) {
+  
+#   cli::cli_alert_info("Processing {length(cell_chunk)} cells...")
+  
+#   pxl_data <- LoadCellGraphs(pxl_data, 
+#                       cells = cell_chunk, 
+#                       add_marker_counts = TRUE,
+#                       add_layouts = TRUE)
+#   tmp_cg_list <- CellGraphs(pxl_data)[cell_chunk]
+  
+#   patch_list <- lapply(tmp_cg_list, function(cg) {
+#           tryCatch({
+#             p <- patch_detection(cg, 
+#                       patch_markers = c("CD40", "CD20", "CD22"), 
+#                       k = 2L, 
+#                       leiden_resolution = 0.01, 
+#                       patch_nodes_threshold = 400, 
+#                       verbose = TRUE)
+#             return(p)
+#           }, error = function(e) {
+#             return(NULL)
+#           })
+#         })
+
+#   # Collect the stats
+#   patch_stats <- lapply(patch_list, function(p) {
+#         tryCatch({
+#           p_stat <- table(p@cellgraph %N>% pull(patch))
+#           return(p_stat)
+#         }, error = function(e) {
+#           return(NULL)
+#         })
+#       })
+
+#   return(patch_stats)
+  
+# })
+
+# res <- purrr::flatten(patch_stats_list)
+# saveRDS(res, here("car_t/data/patch_stats_list_400.rds"))
+res <- readRDS("/Users/vincent/Desktop/Pixelgen/pixelgen-appnotes/APPNOTE0003c/data_untracked/patch_stats_list.rds")
+
+no_of_patches <- sapply(res, length)
+
+no_of_patches_df <- data.frame(no_of_patches = no_of_patches) %>% 
+  rownames_to_column(var = "name") %>%  
+
+  # If no_of_patches is larger than 0, subtract 1
+  # This is likely because the first patch (patch 1) is the background/non-patch cells
+  mutate(no_of_patches = ifelse(no_of_patches > 0, no_of_patches - 1, no_of_patches)) %>%
+  # Add condition information for further analysis
+  left_join(cd8_cells, by = c("name" = "cell_id")) %>%  
+  mutate(no_of_patches = ifelse(no_of_patches > 4, 5, no_of_patches)) %>%
+  mutate(timepoint = case_when(
+    condition == "cart_cells_only" ~ "T cells alone",
+    condition == "cart_raji_1to1_24hrs" ~ "24h cocultured T cells",
+    condition == "cart_raji_1to1_4hrs" ~ "4h cocultured T cells",
+    TRUE ~ "other"
+  )) %>%  
+  filter(timepoint %in% c("T cells alone", "4h cocultured T cells", "24h cocultured T cells"))
+
+
+# First, let's summarize the data to get counts and percentages
+patch_summary <- no_of_patches_df %>%
+  group_by(group) %>%
+  summarize(
+    # Count cells with different numbers of patches
+    cells_with_no_patches = sum(no_of_patches == 0),
+    cells_with_patches = sum(no_of_patches > 0),
+    total_cells = n(),
+    # Calculate percentage of cells with patches
+    percent_with_patches = round(cells_with_patches / total_cells * 100, 1),
+    # Calculate mean number of patches per cell
+    mean_patches = mean(no_of_patches)
+  ) %>%
+  ungroup() %>%  
+  filter(group != "other")
+
+# Create a second visualization showing the distribution of patch counts
+# Calculate percentage of cells for each patch count
+patch_count_plot_data <- no_of_patches_df %>%
+  group_by(group, no_of_patches, timepoint) %>%
+  summarise(count = n()) %>%
+  group_by(group, timepoint) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  filter(!(group == "other")) %>%
+  filter(timepoint %in% c("T cells alone", "4h cocultured T cells", "24h cocultured T cells")) %>%  
+  ungroup() %>%  
+  mutate(timepoint = factor(timepoint, levels = c("T cells alone", "4h cocultured T cells", "24h cocultured T cells")))
+
+# Create the plot
+# Calculate mean patches per group for annotation
+mean_patches_by_group <- patch_count_plot_data %>%
+  group_by(group, timepoint) %>%
+  summarize(mean_patches = sum(no_of_patches * percentage / 100))
+
+patch_dist <- ggplot(patch_count_plot_data, aes(x = no_of_patches, y = percentage, fill = group)) +
+  geom_bar(stat = "identity", position = position_dodge(preserve = "single"), alpha = 0.7) +
+  # Add vertical  line for mean
+  geom_vline(data = mean_patches_by_group, 
+             aes(xintercept = mean_patches, color = group), 
+             linetype = "dashed", size = 0.5) +
+  # Add text annotation for mean
+  geom_text(data = mean_patches_by_group,
+            aes(x = mean_patches, y = max(patch_count_plot_data$percentage) * 0.9, 
+                label = round(mean_patches, 1)),
+            hjust = -0.1, color = "black") +
+  labs(
+    title = "Distribution of Patch Counts by Cell Type",
+    subtitle = "patch size > 400, resolution = 0.01",
+    x = "Number of Patches per Cell",
+    y = "Percentage of Cells",
+    fill = "Condition"
+  ) +
+  theme_bw() +
+  coord_cartesian(xlim = c(0, 5)) +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(size = 16),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    strip.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  facet_wrap(vars(timepoint))+
+  scale_fill_manual(values = c("CD8 CD25- CD279- [non responding]" = "#224792", 
+                              "CD8 CD25+ CD279- [activated]" = "#2D7828", 
+                              "CD8 CD25+ CD279+ [exhausted]" = "#A53335")) +
+  scale_color_manual(values = c("CD8 CD25- CD279- [non responding]" = "#224792", 
+                              "CD8 CD25+ CD279- [activated]" = "#2D7828", 
+                              "CD8 CD25+ CD279+ [exhausted]" = "#A53335")) +
+  scale_y_continuous(expand = c(0, 0.5)) +
+ scale_x_continuous(breaks = c(0, 1, 2, 3, 4, 5),
+                   labels = c("0", "1", "2", "3", "4", "4+"), expand = c(0.1, 0.1))
+
+patch_dist
+
+```
+
+## Suppl Figure 9D
+
+```{r}
+#| label: suppl-figure-9d
+
+res_100 <- readRDS(here("car_t/data/patch_stats_list_100.rds"))
+res_200 <- readRDS("/Users/vincent/Desktop/Pixelgen/pixelgen-appnotes/APPNOTE0003c/data_untracked/patch_stats_list.rds")
+res_400 <- readRDS(here("car_t/data/patch_stats_list_400.rds"))
+
+
+no_of_patches_100 <- sapply(res_100, length)
+no_of_patches_200 <- sapply(res_200, length)
+no_of_patches_400 <- sapply(res_400, length)
+
+patch_no_list <- lapply(list(no_of_patches_100, no_of_patches_200, no_of_patches_400), function(x) {
+no_of_patches_df <- data.frame(no_of_patches = x) %>% 
+  rownames_to_column(var = "name") %>%  
+  # If no_of_patches is larger than 0, subtract 1
+  # This is likely because the first patch (patch 1) is the background/non-patch cells
+  mutate(no_of_patches = ifelse(no_of_patches > 0, no_of_patches - 1, no_of_patches)) %>%
+  # Add condition information for further analysis
+  left_join(cd8_cells, by = c("name" = "cell_id")) %>%  
+  mutate(no_of_patches = ifelse(no_of_patches > 4, 5, no_of_patches)) %>%
+  mutate(timepoint = case_when(
+    condition == "cart_cells_only" ~ "T cells alone",
+    condition == "cart_raji_1to1_24hrs" ~ "24h cocultured T cells",
+    condition == "cart_raji_1to1_4hrs" ~ "4h cocultured T cells",
+    TRUE ~ "other"
+  )) %>%  
+  filter(timepoint %in% c("T cells alone", "4h cocultured T cells", "24h cocultured T cells"))
+patch_count_plot_data <- no_of_patches_df %>%
+  group_by(group, no_of_patches, timepoint) %>%
+  summarise(count = n()) %>%
+  group_by(group, timepoint) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  filter(!(group == "other")) %>%
+  filter(timepoint %in% c("T cells alone", "4h cocultured T cells", "24h cocultured T cells")) %>%  
+  ungroup() %>%  
+  mutate(timepoint = factor(timepoint, levels = c("T cells alone", "4h cocultured T cells", "24h cocultured T cells")))
+# Create the plot
+# Calculate mean patches per group for annotation
+mean_patches_by_group <- patch_count_plot_data %>%
+  group_by(group, timepoint) %>%
+  summarize(mean_patches = sum(no_of_patches * percentage / 100)) |>
+  filter(group != "other")
+return(mean_patches_by_group)
+})
+
+patch_no_df <- bind_rows(patch_no_list, .id = "resolution")
+
+
+patch_robustness_plot <- patch_no_df %>%
+  mutate(
+    resolution_label = case_when(
+      resolution == "1" ~ "patch size > 100",
+      resolution == "2" ~ "patch size > 200",
+      resolution == "3" ~ "patch size > 400",
+      TRUE ~ "other"
+    )
+  ) %>%
+  filter(timepoint == "24h cocultured T cells") %>%
+  ggplot(aes(x = resolution_label, y = mean_patches, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(
+    values = c(
+      "CD8 CD25- CD279- [non responding]" = "lightgrey",
+      "CD8 CD25+ CD279- [activated]" = "darkgrey",
+      "CD8 CD25+ CD279+ [exhausted]" = "darkgreen"
+    )
+  ) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  labs(x = "Patch Size Threshold", y = "Mean Number of Patches", fill = "Group", title = "Mean Number of Patches for 24h Cocultured T Cells") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+```
+
+
+## Suppl Figure 9C
+
+0 patches
+
+```{r}
+#| echo: false
+#| code-fold: true
+
+no_patch <- "cart_raji_1to1_4hrs_denoised_s1_b46cea37e5951e88"
+pxl_data <- LoadPNACellGraphs(pxl_data, 
+                      cells = no_patch, 
+                      add_marker_counts = TRUE,
+                      add_layouts = TRUE)
+cg_no_patch <- CellGraphs(pxl_data)[[no_patch]]
+
+
+xyz_no_patch <- CellGraphData(cg_no_patch, "layout")$wpmds_3d %>%
+  bind_cols(CellGraphData(cg_no_patch, "counts")  %>%  as.matrix())
+
+
+df <- xyz_no_patch
+df_rotated <- rearrr::rotate_3d(
+  as.data.frame(df),
+  x_col = "x",
+  y_col = "y",
+  z_col = "z",
+  x_deg = 240,
+  y_deg = 120,
+  z_deg = 0,
+  origin = c(0, 0, 0),
+  keep_original = TRUE
+)
+
+
+
+cell <- df_rotated %>% 
+mutate(patch = coalesce(CD40, CD20, CD22, IgM)) %>% 
+select(x_rotated, y_rotated, z_rotated, patch) 
+
+
+# Call the function with our data
+nn_df <- calculate_neighbor_patch_values(cell, k = 249)
+
+df_rotated$avg_neighbor_patch <- nn_df$avg_neighbor_patch
+patch_pl <- df_rotated %>%  
+arrange(avg_neighbor_patch) %>% 
+mutate(avg_neighbor_patch = ifelse(avg_neighbor_patch > 0.05, avg_neighbor_patch, 0)) %>% 
+ggplot(aes(x = x_rotated, y = y_rotated, color = avg_neighbor_patch)) +
+  geom_point(alpha = 0.4) +
+  scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+  theme_classic() +
+theme(aspect.ratio = 1) +
+theme(
+axis.title = element_blank(),
+axis.text = element_blank(),
+axis.ticks = element_blank(),
+axis.line = element_blank()) +
+ggtitle(no_patch) + NoLegend()
+
+
+ggsave(paste0("APPNOTE0003c/output/patched_cells/patch_no/no_patch/fig3e_", no_patch, "_cts.pdf"), patch_pl, width = 10, height = 10)
+
+```
+
+
+1 patches
+
+```{r}
+#| echo: false
+#| code-fold: true
+
+one_patch <- "cart_raji_1to1_4hrs_denoised_s1_fd2e3ea555e22238"
+pxl_data <- LoadCellGraphs(pxl_data, 
+                      cells = one_patch, 
+                      add_marker_counts = TRUE,
+                      add_layouts = TRUE)
+cg_one_patch <- CellGraphs(pxl_data)[[one_patch]]
+
+
+xyz_one_patch <- CellGraphData(cg_one_patch, "layout")$wpmds_3d %>%
+  bind_cols(CellGraphData(cg_one_patch, "counts")  %>%  as.matrix())
+
+
+df <- xyz_one_patch
+
+df_rotated <- rearrr::rotate_3d(
+  as.data.frame(df),
+  x_col = "x",
+  y_col = "y",
+  z_col = "z",
+  x_deg = 240,
+  y_deg = 0,
+  z_deg = 0,
+  origin = c(0, 0, 0),
+  keep_original = TRUE
+)
+
+
+cell <- df_rotated %>% 
+mutate(patch = coalesce(CD40, CD20, CD22, IgM)) %>% 
+select(x_rotated, y_rotated, z_rotated, patch) 
+
+
+# Call the function with our data
+nn_df <- calculate_neighbor_patch_values(cell, k = 249)
+
+df_rotated$avg_neighbor_patch <- nn_df$avg_neighbor_patch
+patch_pl <- df_rotated %>%  
+arrange(avg_neighbor_patch) %>% 
+mutate(avg_neighbor_patch = ifelse(avg_neighbor_patch > 0.03, avg_neighbor_patch, 0)) %>% 
+ggplot(aes(x = x_rotated, y = y_rotated, color = avg_neighbor_patch)) +
+  geom_point(alpha = 0.4) +
+  scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+  theme_classic() +
+theme(aspect.ratio = 1) +
+theme(
+axis.title = element_blank(),
+axis.text = element_blank(),
+axis.ticks = element_blank(),
+axis.line = element_blank()) +
+ggtitle(one_patch) + NoLegend()
+ggsave("APPNOTE0003c/output/patched_cells/patch_no/one_patch/fig3e_avg_neighbor_patch.pdf", patch_pl, width = 10, height = 10)
+
+```
+
+
+2 patches
+
+```{r}
+#| echo: false
+#| code-fold: true
+
+#two_patch <- "cart_raji_1to1_24hrs_denoised_cea7f037b763e3f1"
+two_patch <- "cart_raji_1to1_24hrs_denoised_s1_5ea4aea6c897507b"
+pxl_data <- LoadCellGraphs(pxl_data, 
+                      cells = two_patch, 
+                      add_marker_counts = TRUE,
+                      add_layouts = TRUE)
+cg_two_patch <- CellGraphs(pxl_data)[[two_patch]]
+
+
+xyz_two_patch <- CellGraphData(cg_two_patch, "layout")$wpmds_3d %>%
+  bind_cols(CellGraphData(cg_two_patch, "counts")  %>%  as.matrix())
+
+df <- xyz_two_patch
+df_rotated <- rearrr::rotate_3d(
+  as.data.frame(df),
+  x_col = "x",
+  y_col = "y",
+  z_col = "z",
+  x_deg = 0,
+  y_deg = 0,
+  z_deg = 0,
+  origin = c(0, 0, 0),
+  keep_original = TRUE
+)
+
+cell <- df_rotated %>% 
+mutate(patch = coalesce(CD40, CD20, CD22, IgM)) %>% 
+select(x_rotated, y_rotated, z_rotated, patch) 
+
+
+# Call the function with our data
+nn_df <- calculate_neighbor_patch_values(cell, k = 249)
+
+df_rotated$avg_neighbor_patch <- nn_df$avg_neighbor_patch
+patch_pl <- df_rotated %>%  
+arrange(avg_neighbor_patch) %>% 
+mutate(avg_neighbor_patch = ifelse(avg_neighbor_patch > 0.03, avg_neighbor_patch, 0)) %>% 
+ggplot(aes(x = x_rotated, y = y_rotated, color = avg_neighbor_patch)) +
+  geom_point(alpha = 0.4) +
+  scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+  theme_classic() +
+theme(aspect.ratio = 1) +
+theme(
+axis.title = element_blank(),
+axis.text = element_blank(),
+axis.ticks = element_blank(),
+axis.line = element_blank()) +
+ggtitle(two_patch) + NoLegend()
+ggsave("APPNOTE0003c/output/patched_cells/patch_no/two_patch/fig3e_avg_neighbor_patch.pdf", patch_pl, width = 10, height = 10)
+
+
+```
+
+
+
+3 patches
+
+```{r}
+#| echo: false
+#| code-fold: true
+
+three_patch <- "cart_raji_1to1_4hrs_denoised_s1_ed470f5afffa96c8"
+pxl_data <- LoadCellGraphs(pxl_data, 
+                      cells = three_patch, 
+                      add_marker_counts = TRUE,
+                      add_layouts = TRUE)
+cg_three_patch <- CellGraphs(pxl_data)[[three_patch]]
+
+
+xyz_three_patch <- CellGraphData(cg_three_patch, "layout")$wpmds_3d %>%
+  bind_cols(CellGraphData(cg_three_patch, "counts")  %>%  as.matrix())
+
+
+df <- xyz_three_patch
+df_rotated <- rearrr::rotate_3d(
+  as.data.frame(df),
+  x_col = "x",
+  y_col = "y",
+  z_col = "z",
+  x_deg = 240,
+  y_deg = 0,
+  z_deg = 0,
+  origin = c(0, 0, 0),
+  keep_original = TRUE
+)
+
+cell <- df_rotated %>% 
+mutate(patch = coalesce(CD40, CD20, CD22, IgM)) %>% 
+select(x_rotated, y_rotated, z_rotated, patch) 
+
+nn_df <- calculate_neighbor_patch_values(cell, k = 249)
+
+df_rotated$avg_neighbor_patch <- nn_df$avg_neighbor_patch
+patch_pl <- df_rotated %>%  
+arrange(avg_neighbor_patch) %>% 
+mutate(avg_neighbor_patch = ifelse(avg_neighbor_patch > 0.045, avg_neighbor_patch, 0)) %>% 
+ggplot(aes(x = x_rotated, y = y_rotated, color = avg_neighbor_patch)) +
+  geom_point(alpha = 0.4) +
+  scale_color_gradientn(colors = c("grey", "#2955AE", "#1C3A76")) +
+  theme_classic() +
+theme(aspect.ratio = 1) +
+theme(
+axis.title = element_blank(),
+axis.text = element_blank(),
+axis.ticks = element_blank(),
+axis.line = element_blank()) +
+ggtitle(three_patch) + NoLegend()
+
+ggsave(paste0("APPNOTE0003c/output/patched_cells/patch_no/three_patch/fig3d_", three_patch, "_cts.pdf"), patch_pl, width = 10, height = 10)
+```
+
+```{r}
+#| echo: false
+#| code-fold: true
+
+markers_cd4 <- read_delim("/Users/vincent/Desktop/Pixelgen/pixelgen-appnotes/APPNOTE0003c/data_untracked/CAR_markers_to_plot_250407.csv", delim = ";", col_select = c(1,3,4), trim_ws = TRUE)  %>%  
+filter(`CD4 T cells` == "x") %>%
+pull(Marker_id) 
+
+markers_cd8 <- read_delim("/Users/vincent/Desktop/Pixelgen/pixelgen-appnotes/APPNOTE0003c/data_untracked/CAR_markers_to_plot_250407.csv", delim = ";", col_select = c(1,3,4), trim_ws = TRUE)  %>%  
+filter(`CD8 T cells` == "x") %>%
+pull(Marker_id) 
+markers_cd8 <- replace(markers_cd8, markers_cd8 == "TCRVD2", "TCRVd2")
+markers_cd8 <- replace(markers_cd8, markers_cd8 == "TCRVG9", "TCRVg9")
+```
+
+# Suppl Figure 9B
+
+```{r}
+#| label: suppl-figure-9b
+
+# Set colors
+cols <-
+  c(
+    "#1F395F", 
+    "#496389", 
+    "#728BB1", 
+    "#AABAD1", 
+    "#DFE5EE", 
+    "#FFFFFF", 
+    "#FFE0EA", 
+    "#E9AABF", 
+    "#CD6F8D", 
+    "#A23F5E", 
+    "#781534")
+
+
+# Cd8 Heatmap
+cd8_hm_data <- FetchData(pxl_data, vars = c("condition", "manual_annotation", markers_cd8)) %>% 
+  filter(condition %in% c("cart_cells_only", "cart_raji_1to1_24hrs", "cart_raji_1to1_4hrs")) %>% 
+  filter(manual_annotation == "CD8") %>% 
+  pivot_longer(cols = all_of(markers_cd8), names_to = "marker", values_to = "expression") %>% 
+  group_by(condition, manual_annotation, marker) %>% 
+  summarise(median_expression = mean(expression), 
+            .groups = "drop") %>% 
+  pivot_wider(names_from = marker, values_from = median_expression) %>%
+  select(-manual_annotation) %>% 
+  column_to_rownames("condition")
+cd8_hm_data <- cd8_hm_data[c("cart_raji_1to1_24hrs", "cart_raji_1to1_4hrs", "cart_cells_only"),]
+
+cd8_abundance_hm_absolute_ph <- ComplexHeatmap::pheatmap(as.matrix(cd8_hm_data), 
+                         color = cols[6:11], 
+                         cluster_rows = FALSE, 
+                         cluster_cols = TRUE,
+                         cellwidth = 10,
+                         cellheight = 10)
+# Draw once so we can extract column order (ComplexHeatmap S4 requires draw() before column_order())
+ComplexHeatmap::draw(cd8_abundance_hm_absolute_ph)
+col_order_absolute <- ComplexHeatmap::column_order(cd8_abundance_hm_absolute_ph)
+(cd8_abundance_hm_absolute <- ggplotify::as.ggplot(cd8_abundance_hm_absolute_ph) + ggtitle("CD8 Abundance Heatmap (absolute)"))
+
+
+# Get the baseline values (cart_cells_only)
+baseline_values <- cd8_hm_data["cart_cells_only", ]
+# Subtract the baseline from each row
+for (row_name in rownames(cd8_hm_data)) {
+  cd8_hm_data[row_name, ] <- cd8_hm_data[row_name, ] - baseline_values
+}
+
+# Add a note to the row names to indicate these are now relative values
+rownames(cd8_hm_data)[1:3] <- paste0(rownames(cd8_hm_data)[1:3], " (rel. to baseline)")
+
+# Clip values to -1 and 1
+cd8_hm_data[cd8_hm_data < -1] <- -1
+cd8_hm_data[cd8_hm_data > 1] <- 1
+
+# Use same column order as absolute heatmap (no re-clustering)
+cd8_hm_data <- cd8_hm_data[, col_order_absolute]
+cd8_abundance_hm <- ComplexHeatmap::pheatmap(as.matrix(cd8_hm_data), 
+                         color = cols, 
+                         cluster_rows = FALSE, 
+                         cluster_cols = FALSE,
+                         cellwidth = 10,
+                         cellheight = 10)
+(cd8_abundance_hm <- ggplotify::as.ggplot(cd8_abundance_hm) + ggtitle("CD8 Abundance Heatmap (no filter)"))
+```
+
+# Suppl Figure 9A
+
+```{r}
+#| label: suppl-figure-9a
+
+df <- ProximityScores(pxl_cart_fmc63, add_marker_counts = TRUE) %>% 
+  filter(count_1 > 100 & count_2 > 100) %>% 
+  group_by(marker_1, marker_2) %>% 
+  filter(n() > 5) %>% 
+  summarise(median_coloc = mean(log2_ratio),
+            .groups = "drop")
+
+
+cols <-
+  c(
+    "#1F395F", 
+    "#496389", 
+    "#728BB1", 
+    "#AABAD1", 
+    "#DFE5EE", 
+    "#FFFFFF", 
+    "#FFE0EA", 
+    "#E9AABF", 
+    "#CD6F8D", 
+    "#A23F5E", 
+    "#781534")
+
+
+hm <-ColocalizationHeatmap(df, value_col = "median_coloc", legend_range = c(-1,1), colors = cols) 
+hm_gg<- ggplotify::as.ggplot(hm) + 
+  theme(aspect.ratio = 1)
+
+```
+
+# Suppl Figure 10A and 10B
+
+```{r}
+#| label: suppl-figure-10a-10b
+
+
+prox_scores <- ProximityScores(pxl_data, meta_data_columns = c("manual_annotation", "condition", "type"), add_marker_counts = TRUE)
+
+all_prox_scores_summary <- prox_scores %>% 
+    group_by(manual_annotation, condition, marker_1, marker_2) %>% 
+    summarise(
+      median_prox = median(log2_ratio),
+      mean_prox = mean(log2_ratio),
+      max_prox = max(log2_ratio),
+      min_prox = min(log2_ratio),
+      no_of_cells_with_prox_pct = 100 * sum(log2_ratio > 0) / n()
+    )
+# needed for custom plotting function in helpers.R
+all_prox_scores_summary$type <- "denoised"
+
+set_orders <- c(
+  "CD52",
+  "CD55",
+  "CD162",
+  "CD43",
+  "CD8",
+  "CD50",
+  "CD44",
+  "CD3e",
+  "CD26",
+  "CD11a",
+  "CD18",
+  "CD45",
+  "CD45RB",
+  "CD102",
+  "CD366",
+  "CD7",
+  "CD226",
+  "CD49e",
+  "CD29",
+  "CD2",
+  "CD5",
+  "CD6",
+  "CD40",
+  "CD54",
+  "HLA-DR",
+  "HLA-DR-DP-DQ",
+  "HLA-DQ",
+  "CD22",
+  "CD21",
+    "CD70",
+  "CD58",
+  "CD150",
+  "CD86",
+  "CD84",
+  "CD53",
+  "CD82",
+  "CD81",
+  "CD49D",
+  "CD156c",
+  "CD45RA",
+  "CD352",
+  "HLA-ABC",
+  "B2M",
+  "CD71",
+  "CD59",
+  "CD48"
+)
+
+p_co <- create_proximity_heatmap(all_prox_scores_summary, pxl_data, metric = "median_prox", cell_type_column = "manual_annotation", cell_type = "CD8", condition_name = "cart_raji_1to1_24hrs", denoising = "denoised", expr_threshold = 100, limit_values = 1, return_order = FALSE, set_order = set_orders)
+
+p_resting <- create_proximity_heatmap(all_prox_scores_summary, pxl_data, metric = "median_prox", cell_type_column = "manual_annotation", cell_type = "CD8", condition_name = "cart_cells_only", denoising = "denoised", expr_threshold = 100, limit_values = 1, return_order = FALSE, set_order = set_orders)
+```
+
+
+

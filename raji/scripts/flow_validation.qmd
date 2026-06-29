@@ -1,0 +1,505 @@
+---
+title: "Effect of PHA Stimulation on PBMCs"
+date: "2025-08-25"
+output: html_document
+format:
+  html:
+    theme: cosmo
+    page-layout: full
+    code_folding: show
+    toc: true
+    toc-location: right
+    toc-depth: 4
+---
+
+# Introduction
+
+In this data analysis workflow, we will explore how phytohemagglutinin (PHA) stimulation affects PBMCs (Peripheral Blood Mononuclear Cells) by comparing a stimulated vs an unstimulated sample. PHA, a plant-derived lectin, binds to carbohydrates on the surface of T-cells and stimulates them to enter the cell cycle, a process known as blastogenesis, leading to T-cell proliferation. This type of stimulation should have a substantial effect on both the abundance and spatial organization of multiple cell surface proteins and is thus an ideal use case to showcase PNA data.
+
+# Data
+
+
+    - PNA064_Sample_1_S1.layout.pxl (Stimulated)
+    - PNA064_Sample_2_S2.layout.pxl (PHA)
+    - PNA064_Sample_3_S3.layout.pxl (Stimulated)
+    - PNA064_Sample_5_S5.layout.pxl (PHA)
+    - PNA056_Maud_PBMCs_unstimulated_sample01_S1.layout.dataset.pxl (Unstimulated)
+    - PNA056_Maud_PBMCs_PHA_sample02_S2.layout.dataset.pxl (PHA)
+
+# Data Preprocessing
+
+Before we can start analyzing the data, we need to preprocess it. This includes loading the data, filtering out low quality cells and performing basic quality control.
+
+## Load Data
+
+Lets begin our analysis by loading the necessary packages and data. To make this process easier, we have developed the `pixelatorR` package, which provides a set of functions to load and analyze PNA data. 
+
+::: {.callout-note}
+The installation of the `pixelatorR` package is straightforward and can be done using the following command:
+
+```{r, eval = FALSE}
+pak::pak("PixelgenTechnologies/pixelatorR")
+```
+:::
+
+
+```{r load_packages, message = FALSE}
+library(pixelatorR)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(stringr)
+library(Seurat)
+library(SeuratObject)
+library(ggplot2)
+library(harmony)
+```
+
+```{r load_data, message = FALSE}
+
+# Location of pxl files: adapt this to your own data
+data_files <- c(
+  resting_3832 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA064_Sample_1_S1.layout.pxl"),
+  stimulated_3832 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA064_Sample_2_S2.layout.pxl")
+  #resting_6339 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA064_Sample_3_S3.layout.pxl"),
+  #stimulated_6339 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA064_Sample_5_S5.layout.pxl"),
+  #resting_7312 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA056_Maud_PBMCs_unstimulated_sample01_S1.layout.dataset.pxl"),
+  #stimulated_7312 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA056_Maud_PBMCs_PHA_sample02_S2.layout.dataset.pxl")
+)
+
+# Read PXL files as a list of Seurat objects
+obj_list <- lapply(data_files, ReadPNA_Seurat)
+
+# Subset to only include approximately 500 cells per condition
+set.seed(123)
+resting_3832_cells_sample <- sample(colnames(obj_list$resting_3832), 457)
+#resting_6339_cells_sample <- sample(colnames(obj_list$resting_6339), 532)
+#resting_7312_cells_sample <- sample(colnames(obj_list$resting_7312), 549)
+obj_list$resting_3832 <- subset(obj_list$resting_3832, cells = resting_3832_cells_sample)
+#obj_list$resting_6339 <- subset(obj_list$resting_6339, cells = resting_6339_cells_sample)
+#obj_list$resting_7312 <- subset(obj_list$resting_7312, cells = resting_7312_cells_sample)
+
+# Combine files into a single Seurat object
+pg_data_combined <- merge(obj_list[[1]],  y = obj_list[-1], add.cell.ids = names(obj_list)) 
+
+# Add meta data describing the condition of the sample with the Seurat AddMetaData function
+pg_data_combined <- AddMetaData(
+  pg_data_combined, 
+  metadata = data.frame(id = colnames(pg_data_combined)) %>% 
+    mutate(condition = sapply(str_split(id, "_"), function(x) x[1]), 
+            donor = sapply(str_split(id, "_"), function(x) x[2]),
+            sample = paste(condition, donor, sep = "_")) %>% 
+    column_to_rownames("id")
+  )
+
+# Join the data layers. In Seurat v5 (which is the basis for the `pixelatorR` package), by default the data layers are stored in a list of matrices, which is not always convenient to work with. We'll join the data layers into a single matrix.
+pg_data_combined <- JoinLayers(pg_data_combined)
+```
+
+## Inspect the data
+
+Let's take a look at the data prior to any quality control filtering. We can start by inspecting the number of cells and features in the data.
+
+```{r inspect_data, results = "hold"}
+print(paste("Number of cells:", ncol(pg_data_combined)))
+print(paste("Number of features:", nrow(pg_data_combined)))
+print(paste("Number of conditions:", length(unique(pg_data_combined$condition))))
+print(paste("Number of donors:", length(unique(pg_data_combined$donor))))
+```
+
+Allright, we have 5383 cells and 158 features in the data. This seems about the right number of cells and the number of features is correct. 
+We have 2 conditions (resting and stimulated) and 3 donors (3832, 7312 and 6339). 
+
+```{r inspect_data_summary}
+table(pg_data_combined$condition, pg_data_combined$donor)
+```
+
+We'll continue with the quality control!
+
+## Quality Control
+
+The first thing we'll do is check and if necessary adjust the cell calling threshold set by **pixelator** by looking at the molecule rank plot. The standard threshold is 8000 molecules per cell, but you might want to adjust it to your own data if you expect for example very small cells to be present in your data or you want to apply a stricter threshold. In practice, we want to capture most high quality cells by setting the threshold to a value that is just below the inflection point in the molecule rank plot. If samples look very different in the molecule rank plot, you can even decide to set this threshold on a per sample basis.
+
+```{r check_cell_calling_threshold}
+
+# The molecule rank plot shows the number of molecules per cell ranked by the number of molecules. \nThe x-axis shows the rank of the cell and the y-axis shows the number of molecules. The cells are colored by the sample id.
+MoleculeRankPlot(pg_data_combined, group_by = "sample") & 
+  geom_hline(yintercept = 8000, color = "red")
+```
+
+In addition, already from this initial inspection, we can see that the stimulated samples have on average more molecules per cell than the resting samples. This is a good indication that the stimulation worked!
+
+There are some additional metrics that we look at to assess the quality of the data, such as the number of reads per component, isotype fraction and the average k-core (measure of graph connectivity).
+
+```{r inspect_data_quality, message = FALSE, warning = FALSE}
+
+pg_data_combined[[]] %>% 
+  select(sample, reads_in_component, isotype_fraction, average_k_core) %>% 
+  pivot_longer(cols = c("reads_in_component", "isotype_fraction", "average_k_core"), names_to = "metric", values_to = "value") %>% 
+  ggplot(aes(sample, value, fill = sample)) +
+  geom_violin(draw_quantiles = 0.5) + 
+  facet_wrap(~ metric, scales = "free_y", ncol = 1) +
+  theme_bw() +
+  scale_y_continuous(trans = "log10") +
+  labs(x = "", y = "") + 
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1,
+    ),
+    strip.text = element_text(face = "bold")
+  )
+
+```
+
+A quick inspection of these plots reveals no obvious outliers or issues with the data. Sample `resting_7312` has a slightly higher isotype fraction than the other samples, but not to the extent that we would worry about it.
+
+## Filter out low quality cells
+
+Now that we have a good understanding of the data, we can filter out low quality cells. We'll use the molecule rank plot to determine the threshold for the number of molecules per cell.
+
+```{r filter_cells}
+pg_data_combined <- pg_data_combined |>
+  subset(n_umi > 8000 &
+         reads_in_component > 20000 &
+         isotype_fraction < 0.01 &
+         average_k_core > 1.5)
+
+se <- pg_data_combined
+```
+
+Normalize data
+
+```{r}
+se <- se %>% 
+  NormalizeData(normalization.method = "CLR", margin = 2)
+```
+
+
+# Create histograms of the data
+
+## Select cells to plot
+
+```{r}
+
+########################################################
+# CLR Scatter plots
+########################################################
+
+# Density scatter plot of CD3e and CD19 CLR
+sc_clr_cd3e_cd19 <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD3e", marker2 = "CD19") + geom_vline(xintercept = 3) + geom_hline(yintercept = 1.5)
+ggsave("output/flow_validation/scatterplots/clr/sc_clr_cd3e_cd19.pdf", sc_clr_cd3e_cd19, width = 10, height = 10)
+
+# Use this to select the cells to plot
+t_cells <- FetchData(se, vars = c("CD3e", "CD19", "condition"))  |>
+  rownames_to_column("cell_id") |>
+  filter(CD3e > 3 & CD19 < 1.5) |>
+  pull(cell_id)
+
+b_cells <- FetchData(se, vars = c("CD3e", "CD19", "condition"))  |>
+  rownames_to_column("cell_id") |>
+  filter(CD3e < 3 & CD19 > 1.5) |>
+  pull(cell_id)
+
+# Other scatters
+# Density scatter plot of CD3e and CD40 CLR
+sc_clr_cd3e_cd40 <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD3e", marker2 = "CD40")
+ggsave("output/flow_validation/scatterplots/clr/sc_clr_cd3e_cd40.pdf", sc_clr_cd3e_cd40, width = 10, height = 10)
+
+# Density scatter plot of CD3e and HLA-DR CLR
+sc_clr_cd3e_hladr <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD3e", marker2 = "HLA-DR")
+ggsave("output/flow_validation/scatterplots/clr/sc_clr_cd3e_hladr.pdf", sc_clr_cd3e_hladr, width = 10, height = 10)
+
+# Density scatter plot of CD19 and CD40 CLR
+sc_clr_cd19_cd40 <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD19", marker2 = "CD40")
+ggsave("output/flow_validation/scatterplots/clr/sc_clr_cd19_cd40.pdf", sc_clr_cd19_cd40, width = 10, height = 10)
+
+# Density scatter plot of CD19 and HLA-DR CLR
+sc_clr_cd19_hladr <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD19", marker2 = "HLA-DR")
+ggsave("output/flow_validation/scatterplots/clr/sc_clr_cd19_hladr.pdf", sc_clr_cd19_hladr, width = 10, height = 10)
+
+########################################################
+# Raw counts Scatter plots
+########################################################
+
+library(scales)
+
+# Define the custom log10(x+1) transformation
+log10_plus_1 <- trans_new(
+  name = "log10_plus_1",
+  transform = function(x) log10(x + 1),
+  inverse = function(x) 10^x - 1
+)
+
+# Density scatter plot of CD3e and CD19 raw counts
+sc_raw_cd3e_cd19 <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD3e", marker2 = "CD19", layer = "count") + scale_x_continuous(trans = log10_plus_1) + scale_y_continuous(trans = log10_plus_1)
+ggsave("output/flow_validation/scatterplots/logged/sc_logged_cd3e_cd19.pdf", sc_raw_cd3e_cd19, width = 10, height = 10)
+
+# Other scatters
+# Density scatter plot of CD3e and CD40 raw counts
+sc_raw_cd3e_cd40 <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD3e", marker2 = "CD40", layer = "count") + scale_x_continuous(trans = log10_plus_1) + scale_y_continuous(trans = log10_plus_1)
+ggsave("output/flow_validation/scatterplots/logged/sc_logged_cd3e_cd40.pdf", sc_raw_cd3e_cd40, width = 10, height = 10)
+
+# Density scatter plot of CD3e and HLA-DR raw counts
+sc_raw_cd3e_hladr <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD3e", marker2 = "HLA-DR", layer = "count") + scale_x_continuous(trans = log10_plus_1) + scale_y_continuous(trans = log10_plus_1)
+ggsave("output/flow_validation/scatterplots/logged/sc_logged_cd3e_hladr.pdf", sc_raw_cd3e_hladr, width = 10, height = 10)
+
+# Density scatter plot of CD19 and CD40 raw counts
+sc_raw_cd19_cd40 <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD19", marker2 = "CD40", layer = "count") + scale_x_continuous(trans = log10_plus_1) + scale_y_continuous(trans = log10_plus_1)
+ggsave("output/flow_validation/scatterplots/logged/sc_logged_cd19_cd40.pdf", sc_raw_cd19_cd40, width = 10, height = 10)
+
+# Density scatter plot of CD19 and HLA-DR raw counts
+sc_raw_cd19_hladr <- DensityScatterPlot(se, facet_vars = "condition", marker1 = "CD19", marker2 = "HLA-DR", layer = "count") + scale_x_continuous(trans = log10_plus_1) + scale_y_continuous(trans = log10_plus_1)
+ggsave("output/flow_validation/scatterplots/logged/sc_logged_cd19_hladr.pdf", sc_raw_cd19_hladr, width = 10, height = 10)
+```
+
+## Plot Histograms Logged values
+
+```{r}
+
+# Prepare data for plotting
+plot_data <- FetchData(se, vars = c("CD3e", "CD19", "HLA-DR", "CD40", "condition"), slot = "count") |>
+  rownames_to_column("cell_id") |>
+  filter(cell_id %in% t_cells) |>
+  pivot_longer(cols = c("CD3e", "CD19", "HLA-DR", "CD40"), names_to = "marker", values_to = "expression")  |>
+  mutate(log_expression = log10(expression + 1))
+
+# Calculate mean log expression for each marker and condition combination
+mean_data <- plot_data |>
+  group_by(marker, condition) |>
+  summarise(mean_log_expr = mean(log_expression), .groups = "drop") |>
+  # Create vertical spacing to avoid overlap - assign each condition a different vertical position
+  group_by(marker) |>
+  arrange(condition) |>
+  mutate(
+    # Use row number to create distinct vertical positions with more spacing
+    vjust_val = 1.1 + (row_number() - 1) * 0.25
+  )
+
+# Create the plot with density distributions and mean annotations
+hist_logged_t_cells <- plot_data |>
+  ggplot(aes(x = log_expression, fill = condition, color = condition)) +
+  # Use density plots with overlapping distributions, typical of flow cytometry
+  geom_density(alpha = 0.5, linewidth = 0.8) +
+  # Add vertical lines at mean positions to show where means are located
+  geom_vline(
+    data = mean_data,
+    aes(xintercept = mean_log_expr, color = condition),
+    linetype = "dashed",
+    alpha = 0.5,
+    linewidth = 0.4,
+    show.legend = FALSE
+  ) +
+  # Add mean values as text annotations at top of plot with sufficient spacing to avoid overlap
+  geom_text(
+    data = mean_data,
+    aes(x = mean_log_expr, y = Inf, label = paste0(condition, ": ", round(mean_log_expr, 2)), color = condition, vjust = vjust_val),
+    inherit.aes = FALSE,
+    hjust = 0.5,
+    size = 3,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  facet_wrap(~marker, scales = "free_y") +
+  # Switch/reverse the default color scheme
+  scale_color_discrete(direction = -1) +
+  scale_fill_discrete(direction = -1) +
+  theme_bw() +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(x = "Expression (Log10[counts + 1])", y = "Density", fill = "Condition", color = "Condition", title = "T cells")
+ggsave("output/flow_validation/histograms/logged/hist_logged_t_cells.pdf", hist_logged_t_cells, width = 10, height = 10)
+```
+
+
+
+```{r}
+
+# Prepare data for plotting
+plot_data <- FetchData(se, vars = c("CD3e", "CD19", "HLA-DR", "CD40", "condition"), slot = "count") |>
+  rownames_to_column("cell_id") |>
+  filter(cell_id %in% b_cells) |>
+  pivot_longer(cols = c("CD3e", "CD19", "HLA-DR", "CD40"), names_to = "marker", values_to = "expression")  |>
+  mutate(log_expression = log10(expression + 1))
+
+# Calculate mean log expression for each marker and condition combination
+mean_data <- plot_data |>
+  group_by(marker, condition) |>
+  summarise(mean_log_expr = mean(log_expression), .groups = "drop") |>
+  # Create vertical spacing to avoid overlap - assign each condition a different vertical position
+  group_by(marker) |>
+  arrange(condition) |>
+  mutate(
+    # Use row number to create distinct vertical positions with more spacing
+    vjust_val = 1.1 + (row_number() - 1) * 0.25
+  )
+
+# Create the plot with density distributions and mean annotations
+hist_logged_b_cells <- plot_data |>
+  ggplot(aes(x = log_expression, fill = condition, color = condition)) +
+  # Use density plots with overlapping distributions, typical of flow cytometry
+  geom_density(alpha = 0.5, linewidth = 0.8) +
+  # Add vertical lines at mean positions to show where means are located
+  geom_vline(
+    data = mean_data,
+    aes(xintercept = mean_log_expr, color = condition),
+    linetype = "dashed",
+    alpha = 0.5,
+    linewidth = 0.4,
+    show.legend = FALSE
+  ) +
+  # Add mean values as text annotations at top of plot with sufficient spacing to avoid overlap
+  geom_text(
+    data = mean_data,
+    aes(x = mean_log_expr, y = Inf, label = paste0(condition, ": ", round(mean_log_expr, 2)), color = condition, vjust = vjust_val),
+    inherit.aes = FALSE,
+    hjust = 0.5,
+    size = 3,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  facet_wrap(~marker, scales = "free_y") +
+  # Switch/reverse the default color scheme
+  scale_color_discrete(direction = -1) +
+  scale_fill_discrete(direction = -1) +
+  theme_bw() +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(x = "Expression (Log10[counts + 1])", y = "Density", fill = "Condition", color = "Condition", title = "B cells")
+ggsave("output/flow_validation/histograms/logged/hist_logged_b_cells.pdf", hist_logged_b_cells, width = 10, height = 10)
+
+
+```
+
+
+
+
+
+## Plot Histograms CLR
+
+```{r}
+
+# Prepare data for plotting
+plot_data <- FetchData(se, vars = c("CD3e", "CD19", "HLA-DR", "CD40", "condition"), slot = "data") |>
+  rownames_to_column("cell_id") |>
+  filter(cell_id %in% t_cells) |>
+  pivot_longer(cols = c("CD3e", "CD19", "HLA-DR", "CD40"), names_to = "marker", values_to = "expression")  
+
+# Calculate mean log expression for each marker and condition combination
+mean_data <- plot_data |>
+  group_by(marker, condition) |>
+  summarise(mean_expression = mean(expression), .groups = "drop") |>
+  # Create vertical spacing to avoid overlap - assign each condition a different vertical position
+  group_by(marker) |>
+  arrange(condition) |>
+  mutate(
+    # Use row number to create distinct vertical positions with more spacing
+    vjust_val = 1.1 + (row_number() - 1) * 0.25
+  )
+
+# Create the plot with density distributions and mean annotations
+hist_clr_t_cells <- plot_data |>
+  ggplot(aes(x = expression, fill = condition, color = condition)) +
+  # Use density plots with overlapping distributions, typical of flow cytometry
+  geom_density(alpha = 0.5, linewidth = 0.8) +
+  # Add vertical lines at mean positions to show where means are located
+  geom_vline(
+    data = mean_data,
+    aes(xintercept = mean_expression, color = condition),
+    linetype = "dashed",
+    alpha = 0.5,
+    linewidth = 0.4,
+    show.legend = FALSE
+  ) +
+  # Add mean values as text annotations at top of plot with sufficient spacing to avoid overlap
+  geom_text(
+    data = mean_data,
+    aes(x = mean_expression, y = Inf, label = paste0(condition, ": ", round(mean_expression, 2)), color = condition, vjust = vjust_val),
+    inherit.aes = FALSE,
+    hjust = 0.5,
+    size = 3,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  facet_wrap(~marker, scales = "free_y") +
+  # Switch/reverse the default color scheme
+  scale_color_discrete(direction = -1) +
+  scale_fill_discrete(direction = -1) +
+  theme_bw() +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(x = "Expression (CLR Normalized)", y = "Density", fill = "Condition", color = "Condition", title = "T cells")
+
+ggsave("output/flow_validation/histograms/clr/hist_clr_t_cells.pdf", hist_clr_t_cells, width = 10, height = 10)
+```
+
+
+
+```{r}
+
+# Prepare data for plotting
+plot_data <- FetchData(se, vars = c("CD3e", "CD19", "HLA-DR", "CD40", "condition"), slot = "data") |>
+  rownames_to_column("cell_id") |>
+  filter(cell_id %in% b_cells) |>
+  pivot_longer(cols = c("CD3e", "CD19", "HLA-DR", "CD40"), names_to = "marker", values_to = "expression")  
+
+# Calculate mean log expression for each marker and condition combination
+mean_data <- plot_data |>
+  group_by(marker, condition) |>
+  summarise(mean_expression = mean(expression), .groups = "drop") |>
+  # Create vertical spacing to avoid overlap - assign each condition a different vertical position
+  group_by(marker) |>
+  arrange(condition) |>
+  mutate(
+    # Use row number to create distinct vertical positions with more spacing
+    vjust_val = 1.1 + (row_number() - 1) * 0.25
+  )
+
+# Create the plot with density distributions and mean annotations
+hist_clr_b_cells <- plot_data |>
+  ggplot(aes(x = expression, fill = condition, color = condition)) +
+  # Use density plots with overlapping distributions, typical of flow cytometry
+  geom_density(alpha = 0.5, linewidth = 0.8) +
+  # Add vertical lines at mean positions to show where means are located
+  geom_vline(
+    data = mean_data,
+    aes(xintercept = mean_expression, color = condition),
+    linetype = "dashed",
+    alpha = 0.5,
+    linewidth = 0.4,
+    show.legend = FALSE
+  ) +
+  # Add mean values as text annotations at top of plot with sufficient spacing to avoid overlap
+  geom_text(
+    data = mean_data,
+    aes(x = mean_expression, y = Inf, label = paste0(condition, ": ", round(mean_expression, 2)), color = condition, vjust = vjust_val),
+    inherit.aes = FALSE,
+    hjust = 0.5,
+    size = 3,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  facet_wrap(~marker, scales = "free_y") +
+  # Switch/reverse the default color scheme
+  scale_color_discrete(direction = -1) +
+  scale_fill_discrete(direction = -1) +
+  theme_bw() +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(x = "Expression (CLR Normalized)", y = "Density", fill = "Condition", color = "Condition", title = "B cells")
+
+ggsave("output/flow_validation/histograms/clr/hist_clr_b_cells.pdf", hist_clr_b_cells, width = 10, height = 10)
+
+```
+

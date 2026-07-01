@@ -804,7 +804,6 @@ data_files <- c(
 # Read PXL files as a list of Seurat objects
 pg_data_combined <- lapply(data_files, ReadPNA_Seurat)
 
-
 # Combine files into a single Seurat object
 pg_data_combined <- 
   merge(pg_data_combined[[1]],
@@ -1185,7 +1184,7 @@ cd8_p <- df_rotated |>
 
 ```
 
-## Figure 4F
+## Figure 4G
 
 ```{r}
 #| label: figure-4f
@@ -1859,5 +1858,634 @@ p_co <- create_proximity_heatmap(all_prox_scores_summary, pxl_data, metric = "me
 p_resting <- create_proximity_heatmap(all_prox_scores_summary, pxl_data, metric = "median_prox", cell_type_column = "manual_annotation", cell_type = "CD8", condition_name = "cart_cells_only", denoising = "denoised", expr_threshold = 100, limit_values = 1, return_order = FALSE, set_order = set_orders)
 ```
 
+# MPX vs PNA
+
+```{r}
+
+mpx_data_files <- list(
+    sample01 = here(
+        "output/mpx_vs_pna/data/Sample01_V1_PBMC_r1.layout.dataset.pxl"
+    ),
+    sample02 = here(
+        "output/mpx_vs_pna/data/Sample02_V1_PBMC_r2.layout.dataset.pxl"
+    )
+)
 
 
+# Read PXL files as a list of Seurat objects
+obj_list <- lapply(mpx_data_files, ReadMPX_Seurat)
+
+# Combine files into a single Seurat object
+mpx_pbmc <-
+    merge(obj_list[[1]], y = obj_list[-1], add.cell.ids = names(obj_list))
+
+# Add meta data describing the sample and donor origin
+mpx_pbmc <- AddMetaData(
+    mpx_pbmc,
+    metadata = data.frame(id = colnames(mpx_pbmc)) %>%
+        mutate(sample = stringr::str_remove(id, "_.*")) %>%
+        tibble::column_to_rownames("id")
+)
+
+mpx_pbmc <- JoinLayers(mpx_pbmc)
+
+# PNA
+pna_pbmc <- ReadPNA_Seurat(here(
+    "output/mpx_vs_pna/data/PNA062_PHA_PBMCs_1000cells_S04_S4.layout.pxl"
+))
+
+```
+
+```{r}
+# Filter
+mpx_pbmc <-
+    mpx_pbmc %>%
+    subset(molecules >= 8000) %>%
+    subset(tau_type == "normal")
+
+# Filter
+pna_pbmc <-
+    pna_pbmc %>%
+    subset(n_umi >= 30000) %>%
+    subset(tau_type == "normal") |>
+    subset(isotype_fraction < 0.001)
+
+# Normalize MPX data
+mpx_pbmc <- NormalizeData(mpx_pbmc, normalization.method = "CLR", margin = 2)
+
+# Normalize PNA data
+pna_pbmc <- NormalizeData(pna_pbmc, normalization.method = "CLR", margin = 2)
+
+# MPX
+mpx_pbmc <- mpx_pbmc %>%
+    ScaleData() %>%
+    RunPCA() %>%
+    RunUMAP(dims = 1:20)
+
+# Run Harmony to correct for donor effects
+mpx_pbmc <- mpx_pbmc %>%
+    RunHarmony(
+        group.by.vars = "sample",
+        reduction = "pca",
+        reduction.save = "harmony"
+    )
+
+# Run UMAP on the Harmony embedding
+mpx_pbmc <- mpx_pbmc %>%
+    RunUMAP(reduction = "harmony", dims = 1:10, reduction.name = "harmony_umap")
+
+DensityScatterPlot(mpx_pbmc, marker1 = "CD3E", marker2 = "CD4")
+mpx_cd4_cells <- FetchData(mpx_pbmc, vars = c("CD3E", "CD4")) %>%
+    filter(CD3E > 1 & CD4 > 1) %>%
+    rownames()
+
+DensityScatterPlot(mpx_pbmc, marker1 = "CD3E", marker2 = "CD8")
+mpx_cd8_cells <- FetchData(mpx_pbmc, vars = c("CD3E", "CD8")) %>%
+    filter(CD3E > 1 & CD8 > 1) %>%
+    rownames()
+
+DensityScatterPlot(mpx_pbmc, marker1 = "CD20", marker2 = "CD40")
+mpx_b_cells <- FetchData(mpx_pbmc, vars = c("CD20", "CD40")) %>%
+    filter(CD20 > 1 & CD40 > 1) %>%
+    rownames()
+
+# make annotation vector
+mpx_pbmc$cell_type <- ifelse(
+    colnames(mpx_pbmc) %in% mpx_cd4_cells,
+    "CD4T",
+    ifelse(
+        colnames(mpx_pbmc) %in% mpx_cd8_cells,
+        "CD8T",
+        ifelse(colnames(mpx_pbmc) %in% mpx_b_cells, "B", "Unknown")
+    )
+)
+
+# PNA
+pna_pbmc <- pna_pbmc %>%
+    ScaleData() %>%
+    RunPCA() %>%
+    RunUMAP(dims = 1:20)
+
+
+DensityScatterPlot(pna_pbmc, marker1 = "CD3e", marker2 = "CD4")
+pna_cd4_cells <- FetchData(pna_pbmc, vars = c("CD3e", "CD4")) %>%
+    filter(CD3e > 2 & CD4 > 2) %>%
+    rownames()
+
+DensityScatterPlot(pna_pbmc, marker1 = "CD3e", marker2 = "CD8")
+pna_cd8_cells <- FetchData(pna_pbmc, vars = c("CD3e", "CD8")) %>%
+    filter(CD3e > 2 & CD8 > 3) %>%
+    rownames()
+
+DensityScatterPlot(pna_pbmc, marker1 = "CD20", marker2 = "CD40")
+pna_b_cells <- FetchData(pna_pbmc, vars = c("CD20", "CD40")) %>%
+    filter(CD20 > 2 & CD40 > 2) %>%
+    rownames()
+
+# Make annotation vector
+pna_pbmc$cell_type <- ifelse(
+    colnames(pna_pbmc) %in% pna_cd4_cells,
+    "CD4T",
+    ifelse(
+        colnames(pna_pbmc) %in% pna_cd8_cells,
+        "CD8T",
+        ifelse(colnames(pna_pbmc) %in% pna_b_cells, "B", "Unknown")
+    )
+)
+
+```
+
+# Suppl Fig3B
+
+```{r}
+#| label: suppl-figure-3b
+
+
+col_scores_mpx <- ColocalizationScores(
+    mpx_pbmc,
+    meta_data_columns = c("cell_type"),
+    add_marker_counts = TRUE
+) %>%
+    mutate(min_count = pmin(count_1, count_2)) |>
+    filter(min_count > 30)
+col_scores_pna <- ProximityScores(
+    pna_pbmc,
+    meta_data_columns = c("cell_type"),
+    add_marker_counts = TRUE,
+    add_marker_proportions = TRUE
+) %>%
+    mutate(min_count = pmin(count_1, count_2)) |>
+    filter(min_count > 30)
+
+# CD11a<U+2013>CD18 colocalization: percentage positive by cell type (MPX and PNA in one plot)
+# Restrict to cell types present in both assays
+shared_cell_types <- c("CD4T", "CD8T", "B")
+
+cd11a_cd18_coloc <- bind_rows(
+    col_scores_mpx %>%
+        filter(marker_2 == "CD18" & marker_1 == "CD11a") %>%
+        group_by(cell_type) %>%
+        summarise(
+            mean_count_1 = mean(count_1),
+            mean_count_2 = mean(count_2),
+            pct_positive = 100 * mean(pearson_z > 0),
+            .groups = "drop"
+        ) %>%
+        mutate(assay = "MPX"),
+    col_scores_pna %>%
+        filter(marker_2 == "CD18" & marker_1 == "CD11a") %>%
+        group_by(cell_type) %>%
+        summarise(
+            mean_count_1 = mean(count_1),
+            mean_count_2 = mean(count_2),
+            pct_positive = 100 * mean(join_count_z > 0),
+            .groups = "drop"
+        ) %>%
+        mutate(assay = "PNA")
+) %>%
+    filter(cell_type %in% shared_cell_types) %>%
+    mutate(low_count = mean_count_1 < 50 | mean_count_2 < 50) %>%
+    ggplot(aes(
+        x = cell_type,
+        y = pct_positive,
+        fill = assay,
+        alpha = !low_count
+    )) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+    scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0), guide = "none") +
+    theme_bw() +
+    labs(
+        title = "CD11a/CD18",
+        x = "Cell Type",
+        y = "Percentage Cells with Score > 0",
+        fill = NULL
+    ) +
+    scale_fill_manual(values = c(MPX = "#E41A1C", PNA = "#377EB8")) +
+    theme(aspect.ratio = 2)
+
+cd45ra_cd45rb_coloc <- bind_rows(
+    col_scores_mpx %>%
+        filter(marker_2 == "CD45RB" & marker_1 == "CD45RA") %>%
+        group_by(cell_type) %>%
+        summarise(
+            mean_count_1 = mean(count_1),
+            mean_count_2 = mean(count_2),
+            pct_positive = 100 * mean(pearson_z > 0),
+            .groups = "drop"
+        ) %>%
+        mutate(assay = "MPX"),
+    col_scores_pna %>%
+        filter(marker_2 == "CD45RB" & marker_1 == "CD45RA") %>%
+        group_by(cell_type) %>%
+        summarise(
+            mean_count_1 = mean(count_1),
+            mean_count_2 = mean(count_2),
+            pct_positive = 100 * mean(join_count_z > 0),
+            .groups = "drop"
+        ) %>%
+        mutate(assay = "PNA")
+) %>%
+    filter(cell_type %in% shared_cell_types) %>%
+    mutate(low_count = mean_count_1 < 50 | mean_count_2 < 50) %>%
+    ggplot(aes(
+        x = cell_type,
+        y = pct_positive,
+        fill = assay,
+        alpha = !low_count
+    )) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+    scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0), guide = "none") +
+    theme_bw() +
+    labs(
+        title = "CD45RA/CD45RB",
+        x = "Cell Type",
+        y = "Percentage Cells with Score > 0",
+        fill = NULL
+    ) +
+    scale_fill_manual(values = c(MPX = "#E41A1C", PNA = "#377EB8")) +
+    theme(aspect.ratio = 2)
+
+```
+
+# Suppl Fig3F
+
+```{r}
+#| label: suppl-figure-3f
+
+# QC: distribution of spatial zones (MPX pixels / PNA n_umi) in CD8T cells
+qc_units_palette <- c("MPX" = "#E41A1C", "PNA" = "#377EB8")
+
+p_units <- mpx_pbmc[[]] %>%
+    filter(cell_type == "CD8T") %>%
+    select(units = pixels) %>%
+    mutate(assay = "MPX") %>%
+    bind_rows(
+        pna_pbmc[[]] %>%
+            filter(cell_type == "CD8T") %>%
+            select(units = n_umi) %>%
+            mutate(assay = "PNA")
+    ) %>%
+    ggplot(aes(x = assay, y = units, fill = assay)) +
+    geom_violin(
+        alpha = 0.85,
+        draw_quantiles = 0.5,
+        linewidth = 0.6,
+        colour = "grey25"
+    ) +
+    scale_fill_manual(values = qc_units_palette, guide = "none") +
+    scale_y_log10() +
+    labs(
+        x = NULL,
+        y = "Number of Spatial Measurements (log scale)"
+    ) +
+    theme_bw(base_size = 16) +
+    theme(
+        plot.title = element_text(face = "bold", size = 20, hjust = 0.5),
+        axis.title = element_text(face = "bold", size = 16),
+        axis.text = element_text(size = 14, colour = "grey30"),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 2.5,
+        plot.margin = margin(10, 14, 10, 14)
+    )
+
+```
+
+# Suppl Fig3B
+
+```{r}
+#| label: suppl-figure-3b
+
+
+shared_markers <- intersect(rownames(mpx_pbmc), rownames(pna_pbmc))
+
+mpx_pbmc_subset <- mpx_pbmc[shared_markers, ]
+pna_pbmc_subset <- pna_pbmc[shared_markers, ]
+
+
+########################################################
+# Colocalization heatmap by cell type (parameterized)
+########################################################
+# Set the cell type to analyze (e.g. "CD4T", "CD8T", "Monocyte", "B", "NK")
+cell_type_subset <- "CD8T"
+filter_percentage <- 0.1
+mpx_coloc_metric <- "pearson_z"
+mpx_polar_metric <- "morans_z"
+pna_coloc_metric <- "join_count_z"
+clustering_method <- "PNA"
+
+pna_summary_metric <- case_when(
+    pna_coloc_metric == "join_count_z" ~ "mean_join_count_z",
+    pna_coloc_metric == "log2_ratio" ~ "mean_log2_ratio"
+)
+
+# MPX Scores
+col_scores_mpx <- ColocalizationScores(
+    mpx_pbmc_subset,
+    meta_data_columns = c("cell_type"),
+    add_marker_counts = TRUE
+) %>%
+    filter(cell_type == cell_type_subset)
+
+pol_scores_mpx <- PolarizationScores(
+    mpx_pbmc_subset,
+    meta_data_columns = c("cell_type"),
+    add_marker_counts = TRUE
+) %>%
+    filter(cell_type == cell_type_subset)
+
+spatial_scores_mpx <- col_scores_mpx %>%
+    select(component, marker_1, marker_2, metric = mpx_coloc_metric) |>
+    bind_rows(
+        pol_scores_mpx %>%
+            select(component, marker, metric = mpx_polar_metric) |>
+            mutate(marker_1 = marker, marker_2 = marker) |>
+            select(-marker) |>
+            select(component, marker_1, marker_2, metric)
+    )
+spatial_scores_mpx <- spatial_scores_mpx |>
+    filter(!is.na(metric))
+
+cts <- mpx_pbmc_subset %>%
+    LayerData(layer = "counts") %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("marker") %>%
+    tidyr::pivot_longer(-marker, names_to = "component", values_to = "counts")
+# Create an object with the maximum abundance of the isotype controls per component
+# For each component, find the highest isotype control count as a measure of
+# background signal level in that specific component
+isotype_controls <- c("mIgG1", "mIgG2a", "mIgG2b")
+max_of_ctrls <- cts %>%
+    filter(marker %in% isotype_controls) %>%
+    group_by(component) %>%
+    summarize(iso_max = max(counts))
+
+# Add this info to the colocalization scores
+# Enrich the colocalization scores with abundance information for both markers
+# and the background (isotype control) levels to enable informed filtering
+augmented_spatial_scores_mpx <- spatial_scores_mpx %>%
+    left_join(cts, by = c("marker_1" = "marker", "component")) %>%
+    rename(marker_1_count = counts) %>%
+    left_join(cts, by = c("marker_2" = "marker", "component")) %>%
+    rename(marker_2_count = counts) %>%
+    left_join(max_of_ctrls) %>%
+    rename(isotype_control_counts = iso_max) %>%
+    rowwise() %>%
+    mutate(lower_marker_count = min(marker_1_count, marker_2_count))
+
+filtered_spatial_scores_mpx <- augmented_spatial_scores_mpx %>%
+    rowwise() %>%
+    filter(lower_marker_count > max(30, isotype_control_counts)) |>
+    #filter(lower_marker_count > 100) |>
+    select(marker_1, marker_2, metric) |>
+    ungroup()
+
+cell_no_mpx <- sum(mpx_pbmc_subset$cell_type == cell_type_subset)
+
+mpx_hm_data <- filtered_spatial_scores_mpx %>%
+    group_by(marker_1, marker_2) %>%
+    summarise(
+        n = cell_no_mpx,
+        # Calculate percentage of non-zero values
+        pct_of_total = sum(metric != 0) / cell_no_mpx,
+        mean = mean(metric)
+    ) |>
+    filter(pct_of_total >= filter_percentage)
+
+mpx_hm_data_symmetric <- mpx_hm_data %>%
+    bind_rows(
+        mpx_hm_data %>%
+            rename(marker_1 = marker_2, marker_2 = marker_1)
+    ) %>%
+    distinct(marker_1, marker_2, .keep_all = TRUE)
+
+
+# PNA Scores
+cell_no <- sum(pna_pbmc_subset$cell_type == cell_type_subset)
+
+pna_clust_scores <- ProximityScores(
+    pna_pbmc_subset,
+    meta_data_columns = c("cell_type"),
+    add_marker_counts = TRUE,
+    add_marker_proportions = TRUE
+) %>%
+    filter(cell_type == cell_type_subset)
+
+# define background threshold
+isotype_control_fraction_cutoff <- median(pna_pbmc_subset$isotype_fraction) +
+    2 * mad(pna_pbmc_subset$isotype_fraction)
+isotype_control_fraction_cutoff <- max(isotype_control_fraction_cutoff, 0.001)
+# summarize scores
+pna_proximity_summarized <- pna_clust_scores |>
+    FilterProximityScores(
+        background_threshold_pct = isotype_control_fraction_cutoff
+        #background_threshold_count = 100
+    ) |>
+    SummarizeProximityScores(
+        proximity_metric = pna_coloc_metric,
+        summary_stat = "mean"
+    ) |>
+    mutate(n = cell_no) |>
+    select(
+        marker_1,
+        marker_2,
+        n,
+        pct_of_total = pct_detected,
+        mean = pna_summary_metric
+    ) |>
+    filter(pct_of_total >= filter_percentage)
+
+pna_hm_data_symmetric <- pna_proximity_summarized %>%
+    bind_rows(
+        pna_proximity_summarized %>%
+            rename(marker_1 = marker_2, marker_2 = marker_1)
+    ) %>%
+    distinct(marker_1, marker_2, .keep_all = TRUE)
+
+
+# Select the shared markers from the symmetric data
+mpx_marker_list <- unique(c(
+    mpx_hm_data_symmetric$marker_1,
+    mpx_hm_data_symmetric$marker_2
+))
+
+pna_marker_list <- unique(c(
+    pna_hm_data_symmetric$marker_1,
+    pna_hm_data_symmetric$marker_2
+))
+
+common_markers <- intersect(mpx_marker_list, pna_marker_list)
+
+# Create symmetric data for the common markers
+mpx_hm_data_symmetric_common <- mpx_hm_data_symmetric %>%
+    filter(marker_1 %in% common_markers & marker_2 %in% common_markers)
+pna_hm_data_symmetric_common <- pna_hm_data_symmetric %>%
+    filter(marker_1 %in% common_markers & marker_2 %in% common_markers)
+
+
+# Marker name to UniProt ID lookup (panel CSV: marker_id and alt_id both map to uniprot_id)
+marker_uniprot_lookup <- read.csv(
+    "/Users/vincent/Downloads/proxiome-immuno-155-v2-roche.csv",
+    skip = 8
+)
+
+# Flatten lookup so we can match on either marker_id or alt_id (alt_id can be semicolon-separated).
+# Split semicolon-separated uniprot_id into one ID per row, then keep one uniprot_id per marker_name.
+marker_uniprot_flat <- marker_uniprot_lookup %>%
+    mutate(across(c(marker_id, alt_id, uniprot_id), as.character)) %>%
+    select(marker_id, alt_id, uniprot_id) %>%
+    tidyr::pivot_longer(
+        cols = c(marker_id, alt_id),
+        names_to = "src",
+        values_to = "marker_name"
+    ) %>%
+    filter(!is.na(marker_name), marker_name != "") %>%
+    mutate(marker_name = strsplit(marker_name, ";")) %>%
+    tidyr::unnest(marker_name) %>%
+    mutate(marker_name = trimws(marker_name)) %>%
+    filter(marker_name != "") %>%
+    mutate(uniprot_id = strsplit(uniprot_id, ";")) %>%
+    tidyr::unnest(uniprot_id) %>%
+    mutate(uniprot_id = trimws(uniprot_id)) %>%
+    filter(uniprot_id != "") %>%
+    distinct(marker_name, .keep_all = TRUE) %>%
+    select(marker_name, uniprot_id)
+
+hm_data_common <- mpx_hm_data_symmetric_common %>%
+    mutate(assay = "MPX") %>%
+    bind_rows(
+        pna_hm_data_symmetric_common %>%
+            mutate(assay = "PNA")
+    ) %>%
+    # Add UniProt IDs for marker_1 and marker_2; match on marker_id or alt_id from lookup
+    mutate(
+        marker_1_ch = as.character(marker_1),
+        marker_2_ch = as.character(marker_2)
+    ) %>%
+    left_join(
+        marker_uniprot_flat %>%
+            rename(marker_1_ch = marker_name, uniprot_id_1 = uniprot_id),
+        by = "marker_1_ch"
+    ) %>%
+    left_join(
+        marker_uniprot_flat %>%
+            rename(marker_2_ch = marker_name, uniprot_id_2 = uniprot_id),
+        by = "marker_2_ch"
+    ) %>%
+    select(-marker_1_ch, -marker_2_ch)
+
+# Read known interactions
+known_interactions_hs <- readr::read_tsv(
+    "/Users/vincent/Downloads/BIOGRID-ORGANISM-5.0.254.mitab/BIOGRID-ORGANISM-Homo_sapiens-5.0.254.mitab.txt",
+    col_names = TRUE
+)
+
+# Extract "uniprot/swiss-prot:" and following characters until "|" (or end of string)
+known_interactions_simple <- known_interactions_hs %>%
+    mutate(
+        uniprot_id_a = stringr::str_extract(
+            `Alt IDs Interactor A`,
+            pattern = "uniprot/swiss-prot:[^|]*"
+        ),
+        uniprot_id_b = stringr::str_extract(
+            `Alt IDs Interactor B`,
+            pattern = "uniprot/swiss-prot:[^|]*"
+        )
+    ) %>%
+    select(
+        uniprot_id_a,
+        uniprot_id_b,
+        Interaction_Identifiers = 'Interaction Identifiers',
+        Interaction_Types = 'Interaction Types'
+    ) %>%
+    mutate(
+        uniprot_id_a = stringr::str_remove(
+            uniprot_id_a,
+            pattern = "uniprot/swiss-prot:"
+        ),
+        uniprot_id_b = stringr::str_remove(
+            uniprot_id_b,
+            pattern = "uniprot/swiss-prot:"
+        )
+    )
+
+# Count known interactions per unordered (uniprot_id_a, uniprot_id_b) pair so we can match
+# (uniprot_id_1, uniprot_id_2) in hm_data_common to either order
+known_interaction_counts <- known_interactions_simple %>%
+    filter(!is.na(uniprot_id_a), !is.na(uniprot_id_b)) %>%
+    mutate(
+        pair_key = paste(
+            pmin(uniprot_id_a, uniprot_id_b),
+            pmax(uniprot_id_a, uniprot_id_b),
+            sep = "|"
+        )
+    ) %>%
+    group_by(pair_key) %>%
+    summarise(n_known_interactions = n(), .groups = "drop")
+
+# Left-join: keep all hm_data_common rows; match when (uniprot_id_1, uniprot_id_2) equals
+# (uniprot_id_a, uniprot_id_b) or (uniprot_id_b, uniprot_id_a); add number of matches
+# Normalize pair so (A,B) and (B,A) share the same key; keep one row per pair per assay
+hm_data_anot <- hm_data_common %>%
+    mutate(
+        pair_key = paste(
+            pmin(as.character(uniprot_id_1), as.character(uniprot_id_2)),
+            pmax(as.character(uniprot_id_1), as.character(uniprot_id_2)),
+            sep = "|"
+        )
+    ) %>%
+    left_join(known_interaction_counts, by = "pair_key") %>%
+    mutate(n_known_interactions = replace_na(n_known_interactions, 0L)) %>%
+    group_by(pair_key, assay) %>%
+    slice(1L) %>%
+    ungroup() %>%
+    select(-pair_key) |>
+    mutate(has_interaction = n_known_interactions > 0)
+
+
+# Shared theme: large fonts and clear axis labels for readability
+violin_theme <- function() {
+    theme_classic(base_size = 18) +
+        theme(
+            plot.title = element_text(face = "bold", size = 22, hjust = 0.5),
+            axis.title = element_text(face = "bold", size = 18),
+            axis.text = element_text(size = 16, colour = "grey30"),
+            axis.text.x = element_text(size = 16),
+            panel.grid.major.x = element_blank(),
+            aspect.ratio = 2,
+            plot.margin = margin(8, 12, 8, 12)
+        )
+}
+
+p_known <- hm_data_anot %>%
+    filter(mean < 10) %>%
+    ggplot(aes(x = has_interaction, y = mean, fill = has_interaction)) +
+    geom_hline(
+        yintercept = 0,
+        linetype = "dashed",
+        linewidth = 0.5,
+        colour = "grey55"
+    ) +
+    geom_violin(scale = "width", trim = FALSE, alpha = 0.85, linewidth = 0.6) +
+    stat_summary(
+        fun = mean,
+        geom = "crossbar",
+        width = 0.35,
+        linewidth = 0.7,
+        colour = "grey25"
+    ) +
+    stat_compare_means(
+        comparisons = list(c("TRUE", "FALSE")),
+        method = "wilcox.test",
+        size = 6
+    ) +
+    scale_fill_manual(
+        values = c("FALSE" = "#cfd2cf", "TRUE" = "#4a4af4"),
+        guide = "none"
+    ) +
+    scale_x_discrete(labels = c("FALSE" = "Unknown", "TRUE" = "Known")) +
+    coord_cartesian(ylim = c(-4, 9)) +
+    facet_wrap(~assay) +
+    labs(x = "Interaction", y = "Mean colocalization") +
+    violin_theme()
+
+```

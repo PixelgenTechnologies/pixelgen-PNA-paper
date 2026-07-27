@@ -726,6 +726,40 @@ FetchData(pg_data_resting, c("seurat_clusters", annotation_markers),
   )
 ```
 
+### Cell size
+
+```{r}
+plot_data <- 
+  pg_data_resting %>% 
+  FetchData(c("sample_alias", "n_umi")) 
+plot_median <- 
+  plot_data %>% 
+  group_by(sample_alias) %>% 
+  summarise(median_n_umi = median(n_umi))
+
+plot_data %>% 
+  ggplot(aes(n_umi)) +
+  geom_histogram(fill = "gray80") +
+  geom_vline(data = plot_median,
+            aes(xintercept = median_n_umi),
+            linetype = "dashed", color = "#E05573") +
+  geom_text(data = plot_median,
+            aes(x = median_n_umi, label = paste0("Median: ", round(median_n_umi))),
+            y = 0, vjust = -0.4, size = 3) +
+  scale_x_log10() +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  labs(x = "Number of molecules", y = "Number of cells", title = "Cell size distribution")
+ggsave(
+  filename = paste0(params$save_folder, "cell_size_distribution.pdf"),
+  width = 4,
+  height = 4
+)
+
+```
+
+
+
 ### Doublet detection
 
 ```{r doublet_detection, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
@@ -2598,5 +2632,41 @@ plot_data %>%
                            width = 8,
                            height = 10)
   
+```
+
+## Cell input vs output
+
+```{r}
+
+tibble(
+  expected = c(1000,
+               200,
+               1000,
+               200,
+               1000,
+               200),
+  actual = c(1082,
+             227,
+             1017,
+             195,
+             1080,
+             170)
+) |> 
+  ggplot(aes(x = expected, y = actual)) +
+  geom_point(size = 0.1) +
+  geom_abline(slope = 1, intercept = 0,
+              color = "gray") +
+  scale_x_continuous(limits = c(0, 1200), expand = expansion(0)) +
+  scale_y_continuous(limits = c(0, 1200), expand = expansion(0)) +
+  coord_fixed() +
+  theme_bw() +
+  labs(x = "Input cells",
+       y = "Output cells")
+ggsave(
+  filename = paste0(params$save_folder, "Input_vs_output_cells.pdf"),
+  width = 3,
+  height = 3
+)
+
 ```
 

@@ -1,0 +1,2497 @@
+---
+title: "Proxiome Analysis SOP"
+subtitle: "v0.1.0" 
+format: 
+    html:
+      toc: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+execute:
+  dev: ragg_png
+  eval: false
+  execute-dir: dir
+  echo: true
+  warning: false
+  message: false
+---
+
+This SOP describes a standard workflow for analyzing single cell PNA data using the `pixelatorR` package in R. It covers data setup, quality control, data processing, and statistical testing. The workflow is interactive and modular, requiring manual intervention at several key steps. 
+
+**Important:** Users must actively review and adjust quality control thresholds, select markers, and most critically, perform manual cell type annotation based on marker expression patterns. Automated annotation provides a starting point but should always be verified and refined through careful inspection of differential abundance patterns and marker distributions.
+
+## Project Folder Structure
+
+
+# 0. Setup
+
+## 0.0. Functions
+
+```{r}
+
+#' Create a violin/quasirandom plot with median overlays for PNA object metadata
+#'
+#' @param data Seurat object containing cell metadata
+#' @param var_x String; variable for the x-axis (categorical, e.g., sample/group)
+#' @param var_y String; variable for the y-axis (e.g., n_umi, reads_in_component, etc.)
+#' @param palette Optional named vector of colors for each level of var_x;
+#'   if NULL, a new palette is generated.
+#' @param data_cutoff Numeric [0,1]; quantile cutoff for y-axis (e.g. 0.99 drops
+#'   top 1% as outliers). If NULL, no cutoff is applied.
+#'
+#' @return A ggplot object (beeswarm plot with median overlays)
+create_violin_plot <- function(
+  data, # Seurat object with cell metadata
+  var_x, # grouping variable (string) - x axis
+  var_y, # value variable (string) - y axis
+  palette = NULL, # named vector of colors; names must match unique values of var_x
+  data_cutoff = NULL # quantile cutoff (e.g., 0.99 = keep <=99th percentile of var_y)
+) {
+  # If palette is not provided, auto-generate based on unique values of var_x
+  if (is.null(palette)) {
+    vars_to_plot <- FetchData(data, c(var_x)) |>
+      pull(var_x) |> # extract the grouping variable column
+      unique() # get unique values (e.g. sample IDs)
+    palette <- set_names(
+      pixelatorES::create_sample_palette(
+        # generate (enough) distinct colors
+        vars_to_plot
+      )[seq_len(n_distinct(vars_to_plot))],
+      vars_to_plot
+    )
+  }
+
+  # Determine y-axis upper cutoff (removes extreme outliers if specified)
+  if (!is.null(data_cutoff)) {
+    cutoff_value <- quantile(
+      FetchData(data, var_y) |> pull(var_y),
+      data_cutoff
+    )
+  } else {
+    cutoff_value <- 1 # Only show up to 1 unless cutoff specified
+  }
+
+  # Construct the plot
+  FetchData(data, c(var_x, var_y)) |>
+    ggplot(aes(
+      !!sym(var_x), # x-axis: group
+      !!sym(var_y), # y-axis: measurement
+      color = !!sym(var_x) # color by group for scatter
+    )) +
+    ggbeeswarm::geom_quasirandom() + # beeswarm/jittered scatter plot
+    coord_cartesian(ylim = c(0, cutoff_value)) + # y limits, removing outliers if needed
+    stat_summary(
+      # add median as black diamond
+      fun = median,
+      geom = "point",
+      shape = 23,
+      size = 3,
+      fill = "black",
+      color = "black",
+      position = position_dodge(width = 0.75)
+    ) +
+    stat_summary(
+      # annotate median values above points
+      fun = median,
+      geom = "text",
+      aes(label = round(..y.., 1)),
+      vjust = -1,
+      size = 5,
+      color = "black",
+      position = position_dodge(width = 0.75)
+    ) +
+    theme_bw() +
+    labs(
+      x = var_x,
+      y = var_y
+    ) +
+    scale_color_manual(values = palette) +
+    theme(
+      legend.position = "bottom",
+      axis.text.x = element_text(size = 12, face = "bold"),
+      axis.text.y = element_text(size = 12, face = "bold"),
+      axis.title.x = element_text(size = 14, face = "bold"),
+      axis.title.y = element_text(size = 14, face = "bold")
+    )
+}
+
+#' Save Plot Helper Function
+#'
+#' Saves a ggplot2 plot to one or more file formats with options for size and directory creation.
+#'
+#' @param filename Character. The path and base filename (without extension) for saving the plot.
+#' @param plot ggplot object. The plot to save. Defaults to the last plot produced (`last_plot()`).
+#' @param width Numeric. The width of the plot in inches. Default is 10.
+#' @param height Numeric. The height of the plot in inches. Default is 10.
+#' @param create_dir Logical. Whether to create the directory if it does not exist. Default is TRUE.
+#' @param file_formats Character vector. File formats to save to (e.g., "png", "pdf"). Default is c("png", "pdf").
+#'
+#' @return Invisibly returns NULL. Used for its side effect of writing plot files.
+#' @examples
+#' \dontrun{
+#'   save_plot("results/myplot", plot = myplot, width = 8, height = 6)
+#' }
+save_plot <-
+  function(
+    filename,
+    plot = last_plot(),
+    width = 10,
+    height = 10,
+    create_dir = TRUE,
+    file_formats = c("png", "pdf"),
+    overwrite = getOption("save_plot.overwrite", FALSE)
+  ) {
+    for (format in file_formats) {
+
+      out_file <- paste0(filename, ".", format)
+
+      if (file.exists(out_file) && !overwrite) {
+        message("Skipping existing file: ", out_file)
+        next
+      }
+
+      ggsave(
+        filename = out_file,
+        plot = plot,
+        width = width,
+        height = height,
+        create.dir = create_dir,
+        limitsize = FALSE
+      )
+    }
+    invisible(NULL)
+  }
+
+```
+
+## 0.1. Load packages and helper functions
+
+
+```{r}
+#| label: setup_packages
+
+# Load commonly used packages
+library(tidyverse)
+library(Seurat)
+library(pixelatorR)
+library(harmony)
+library(ComplexHeatmap)
+library(ggplotify)
+library(here)
+library(Matrix)
+library(ggraph)
+
+# Anchor the project root directory
+setwd("roche")
+
+# Set global options for saving plots
+options(save_plot.overwrite = TRUE)
+
+```
+
+## 0.2. Create the PNA object
+
+
+```{r}
+#| label: setup_read_metadata
+
+# Read metadata file into a dataframe
+metadata <- read.csv(here::here("data", "roche_metadata.csv")) |> as_tibble()
+
+# Print the metadata
+print(metadata)
+```
+
+### 0.2.2. Load and merge data
+
+```{r}
+#| label: setup_merge_data
+
+# Load the data from the file paths into a list of PNA objects
+pg_data <-
+    here::here("data", metadata$file_path) |>
+    lapply(ReadPNA_Seurat, load_proximity_scores = FALSE)
+
+# Merge the PNA objects, adding the sample_id to the cell names
+pg_data <-
+    merge(
+        pg_data[[1]],
+        y = pg_data[-1],
+        add.cell.ids = metadata$sample_id
+    ) |>
+    JoinLayers()
+```
+
+### 0.2.3. Add metadata
+
+```{r}
+#| label: setup_add_metadata
+
+# Add metadata to the PNA object
+pg_data[[]] <-
+    pg_data[[]] |>
+    as_tibble(rownames = "cell_id") |>
+    mutate(sample_id = str_sub(cell_id, end = -18)) |> # Remove the last 18 characters from the cell_id to get the sample_id
+    left_join(metadata |> select(-file_path), by = "sample_id") |> # Do not add the file path to the PNA object
+    column_to_rownames("cell_id")
+
+# Sanity check the metadata
+for (col in colnames(metadata |> select(-file_path))) {
+    print(col)
+    print(table(pg_data[[]]$sample_alias, pg_data[[]][, col]))
+}
+```
+
+## 0.3. Theme
+
+```{r}
+#| label: setup_theme
+
+cluster_palette <-
+    c(
+        pixelatorR::PixelgenAccentColors(
+            level = 7,
+            hue = c(
+                "blues",
+                "reds",
+                "cyans",
+                "oranges",
+                "pinks",
+                "greens",
+                "purples",
+                "yellows",
+                "greys",
+                "beiges"
+            )
+        ),
+        pixelatorR::PixelgenAccentColors(
+            level = 9,
+            hue = c(
+                "blues",
+                "pinks",
+                "reds",
+                "yellows",
+                "greys",
+                "beiges"
+            )
+        ),
+        pixelatorR::PixelgenAccentColors(
+            level = 5,
+            hue = c(
+                "purples",
+                "blues",
+                "cyans",
+                "greens",
+                "reds",
+                "oranges"
+            )
+        ),
+        pixelatorR::PixelgenAccentColors(
+            level = 3,
+            hue = c("blues", "reds")
+        ),
+        pixelatorR::PixelgenAccentColors(
+            level = 12,
+            hue = c("blues", "reds")
+        )
+    ) |>
+    unname() |>
+    rep(10)
+
+# Create a condition palette for the conditions
+unique_conditions <- unique(metadata$condition)
+condition_palette <-
+    set_names(
+        pixelatorES::create_sample_palette(
+            unique_conditions
+        )[seq_len(length(unique_conditions))],
+        unique_conditions
+    )
+
+# Create a sample palette for the samples
+unique_samples <- unique(metadata$sample_alias)
+sample_palette <-
+    set_names(
+        pixelatorES::create_sample_palette(
+            unique_samples
+        )[seq_len(length(unique_samples))],
+        unique_samples
+    )
+
+cell_palette <-
+    c(
+        "CD4 T" = "#6D92D1",
+        "CD4 Naive" = "#B9CDED",
+        "Naive CD4 T" = "#B9CDED",
+        "CD4 TSCM" = "#92B0E0",
+        "CD4 TCM" = "#6D92D1",
+        "CD4 TEM" = "#4A73C0",
+        "CD4 TEFF" = "#224792",
+        "CD4 TEMRA" = "#1C3A76",
+        "Treg" = "#2955AE",
+        "CD4 CTL" = "#2955AE",
+        "CD8 T" = "#75C5B5",
+        "CD8 Naive" = "#D0EDE6",
+        "Naive CD8 T" = "#D0EDE6",
+        "CD8 TSCM" = "#A2DACE",
+        "CD8 TCM" = "#75C5B5",
+        "CD8 TEM" = "#4AAF9D",
+        "CD8 TEFF" = "#209785",
+        "CD8 TEMRA" = "#1B7E6F",
+        "other T" = "#1B7E9F",
+        "Other T" = "#1B7E9F",
+        "MAIT" = "#0D6D5E",
+        "DPT" = "#1B7E9F",
+        "DNT" = "#7B787F",
+        "dnT" = "#7B787F",
+        "NK" = "#A28EDB",
+        "CD56dim NK" = "#A28EDB",
+        "CD56bright NK" = "#866CCD",
+        "NK_CD56bright" = "#866CCD",
+        "NKT" = "#6C4ABD",
+        "B" = "#C7A989", # "#917557",
+        "B naive" = "#F0DAC4",
+        "Naive B" = "#F0DAC4",
+        "B intermediate" = "#F0DAC4",
+        "Memory B" = "#C7A989",
+        "B memory" = "#C7A989",
+        "Plasma cells" = "#DE9982",
+        "Plasmablast" = "#DE9982",
+        "DC" = "#DA94C1",
+        "cDC1" = "#DA94C1",
+        "cDC2" = "#BB5391",
+        "pDC" = "#9C4579",
+        "Mono" = "#F7DFA0",
+        "Classical Mono" = "#F7DFA0",
+        "CD14 Mono" = "#F7DFA0",
+        "Intermediate Mono" = "#E6BE4A",
+        "CD16 Mono" = "#BD9315",
+        "Non-classical Mono" = "#BD9315",
+        "other" = "#797979",
+        "Neutrophils" = "#CDCDCD",
+        "Basophils" = "#797979",
+        "Platelet" = "#DB6365",
+        "Platelets" = "#DB6365",
+        "gdT" = "#5A3E9E"
+    )
+```
+
+# 1. Quality control
+
+## 1.1. Read Depth
+
+First we inspect the read depth per cell. This is a measure of the total number of reads in the cell, and is a good indicator of the quality of the data. The higher the read depth, the better the data quality.
+
+```{r}
+#| label: quality_control_read_depth
+
+read_depth_plot <- create_violin_plot(
+    data = pg_data,
+    var_x = "sample_alias",
+    var_y = "reads_in_component",
+    palette = sample_palette,
+    data_cutoff = 0.999 # Remove a few outlier cells that make the plot hard to read
+)
+
+save_plot(
+    filename = 
+        "results/01_quality_control/violin_plots/quality_control_read_depth",
+    plot = read_depth_plot,
+    width = 10,
+    height = 8,
+    create_dir = TRUE
+)
+
+```
+
+## 1.2. Connectivity
+
+Here we inspect the average k-core per cell. The k-core is a measure of the connectivity of the cell, and is another good indicator of the quality of the data. The higher the average k-core, the better the graph connectivity.
+
+```{r}
+#| label: quality_control_average_k_core
+
+# Average k-core per cell
+average_k_core_plot <- create_violin_plot(
+    data = pg_data,
+    var_x = "sample_alias",
+    var_y = "average_k_core",
+    palette = sample_palette,
+    data_cutoff = 1
+)
+
+save_plot(
+    filename = 
+        "results/01_quality_control/violin_plots/quality_control_average_k_core",
+    plot = average_k_core_plot,
+    width = 10,
+    height = 8,
+    create_dir = TRUE
+)
+```
+
+Next, we plot the percentage of dangling nodes per cell. Dangling nodes belong to subgraphs that are connnected to the rest of the graph by a single edge, and are an indicator of the graph connectivity. The lower the percentage of dangling nodes, the better the graph connectivity.
+
+```{r}
+#| label: quality_control_dangling_nodes_plots
+
+# Add percentage of dangling nodes per cell - i.e. K-core 1 fraction
+pg_data <-
+    AddMetaData(
+        pg_data,
+        FetchData(
+            pg_data,
+            c("sample_alias", "k_core_1", "n_umi")
+        ) |>
+            mutate(prc_dangling_nodes = 100 * k_core_1 / n_umi) |>
+            select(prc_dangling_nodes),
+        col.name = "prc_dangling_nodes"
+    )
+
+dangling_nodes_plot <- create_violin_plot(
+    data = pg_data,
+    var_x = "sample_alias",
+    var_y = "prc_dangling_nodes",
+    palette = sample_palette,
+    data_cutoff = 1
+)
+
+save_plot(
+    filename = 
+        "results/01_quality_control/violin_plots/quality_control_dangling_nodes",
+    plot = dangling_nodes_plot,
+    width = 10,
+    height = 8,
+    create_dir = TRUE
+)
+
+```
+
+
+
+## 1.3. Select cells for downstream analysis
+
+In the following steps, we will determine which cells to retain for downstream analysis. The objective is to remove cells that are likely to represent poor-quality data based on the following criteria:
+
+- Unusually small cells, which may indicate cell fragments
+- Unusually large cells, which may represent doublets or technical artifacts
+- Cells with high levels of nonspecific background, as evidenced by elevated isotype marker signal
+- Cells with abnormal marker expression profiles, as indicated by the tau score
+
+We will begin by visually inspecting these quality metrics. Cells that fail to meet the defined thresholds will be excluded during the Data Processing stage.
+
+### 1.3.1. Define thresholds
+
+Revisit these thresholds according to your data. Sometimes it is necessary to use different thresholds for different samples. The thresholds are defined as follows:
+
+- **`n_umi_min_threshold`**: The minimum number of UMI counts per cell. Cells with fewer than this number of UMI counts are likely to be cell fragments.
+- **`n_umi_max_threshold`**: The maximum number of UMI counts per cell. Cells with more than this number of UMI counts are likely to be doublets or technical artifacts.
+- **`isotype_fraction_threshold`**: The maximum fraction of UMI counts that can be attributed to isotype control antibodies. Cells with more than this fraction of UMI counts attributed to isotype control antibodies are likely to have high levels of nonspecific background.
+
+```{r}
+#| label: quality_control_define_thresholds
+
+# Define threshold for minimum molecule counts per cell
+n_umi_min_threshold <- 15000
+n_umi_max_threshold <- Inf
+isotype_fraction_threshold <- 0.0025
+```
+
+
+```{r}
+#| label: quality_control_n_umi_plot
+
+# Plot to visualize thresholds as a violin plot
+n_umi_plot <- create_violin_plot(
+    data = pg_data,
+    var_x = "sample_alias",
+    var_y = "n_umi",
+    palette = sample_palette,
+    data_cutoff = 0.999
+) &
+    geom_hline(
+        yintercept = n_umi_min_threshold,
+        linetype = "dashed",
+        color = "red"
+    ) &
+    geom_hline(
+        yintercept = n_umi_max_threshold,
+        linetype = "dashed",
+        color = "red"
+    ) &
+    theme_bw()
+
+save_plot(
+    filename = 
+        "results/01_quality_control/violin_plots/quality_control_n_umi",
+    plot = n_umi_plot,
+    width = 10,
+    height = 8
+)
+
+```
+
+### 1.3.2. Cell size filtering
+
+This section generates molecule rank plots that visualize the distribution of UMI counts across cells, ranked by abundance. These plots are essential for evaluating the quality thresholds defined earlier and ensuring they appropriately capture the cell population distribution. The plots display cells ranked by their UMI count (from highest to lowest) on a log-log scale, with threshold lines overlaid to visualize how many cells would be retained or excluded based on the current threshold settings.
+
+Setting correct thresholds is crucial for downstream analysis quality. Thresholds that are too lenient may retain low-quality cells, cell fragments, or doublets that can confound biological interpretation. Conversely, thresholds that are too stringent may exclude valid cells and reduce statistical power. The annotated plots generated here provide detailed per-sample statistics showing the number of cells that fall within the acceptable range versus those that would be excluded as outliers (both low and high UMI counts). Users should carefully review these plots and adjust thresholds as needed to balance data quality with cell retention, ensuring that the thresholds appropriately reflect the characteristics of their specific dataset.
+
+```{r}
+#| label: quality_control_select_cells
+
+# Combined molecule rank plots
+molecule_rank_plot_w_thresholds <- MoleculeRankPlot(pg_data, group_by = "sample_alias") +
+    geom_hline(
+        yintercept = n_umi_min_threshold,
+        linetype = "dashed",
+        color = "red"
+    ) +
+    geom_hline(
+        yintercept = n_umi_max_threshold,
+        linetype = "dashed",
+        color = "red"
+    )
+save_plot(
+    filename = "results/01_quality_control/molecule_rank_plots/quality_control_molecule_rank_plot_w_thresholds",
+    plot = molecule_rank_plot_w_thresholds,
+    width = 10,
+    height = 8,
+    create_dir = TRUE
+)
+
+molecule_rank_plot <- MoleculeRankPlot(pg_data, group_by = "sample_alias")
+save_plot(
+    filename = "results/01_quality_control/molecule_rank_plots/quality_control_molecule_rank_plot",
+    plot = molecule_rank_plot,
+    width = 10,
+    height = 8,
+    create_dir = TRUE
+)
+
+# Separate annotated molecule rank plot for each sample
+pg_data[[]] <- pg_data[[]] |>
+    group_by(sample_id) |>
+    mutate(
+        rank = rank(-n_umi, ties.method = "random")
+    ) |>
+    ungroup()
+
+umi_normal <- pg_data[[]] |>
+    mutate(
+        umi_normal = case_when(
+            n_umi > n_umi_min_threshold & n_umi < n_umi_max_threshold ~ TRUE,
+            n_umi < n_umi_min_threshold | n_umi > n_umi_max_threshold ~ FALSE
+        )
+    ) |>
+    filter(tau_type == "normal") |>
+    select(sample_id, umi_normal)
+
+umi_normal_count <- umi_normal |>
+    filter(is.logical(umi_normal)) |>
+    group_by(sample_id) |>
+    summarise(normal_count = sum(umi_normal), .groups = "drop")
+
+umi_outliers <- pg_data[[]] |>
+    select(sample_id, n_umi, tau_type) |>
+    filter(tau_type == "normal") |>
+    mutate(
+        umi_low = n_umi < n_umi_min_threshold,
+        umi_high = n_umi > n_umi_max_threshold
+    ) |>
+    group_by(sample_id) |>
+    summarise(
+        low_count = sum(umi_low),
+        high_count = sum(umi_high),
+        .groups = "drop"
+    )
+
+hline_normal <- data.frame(
+    sample_id = unique(pg_data[[]]$sample_id),
+    cutoff = n_umi_min_threshold
+)
+
+point_colors <- pg_data[[]] |>
+    rownames_to_column("component") |>
+    select(sample_id, n_umi, rank, component) |>
+    left_join(
+        umi_normal_count |> rownames_to_column("component"),
+        by = c("component", "sample_id")
+    ) |>
+    left_join(hline_normal, by = "sample_id") |>
+    mutate(
+        max_value = n_umi_max_threshold,
+        col = case_when(
+            isTRUE(umi_normal) ~ "#496389",
+            n_umi < cutoff & !isTRUE(umi_normal) ~ "#FFA292",
+            n_umi > max_value & !isTRUE(umi_normal) ~ "#FFA292",
+            TRUE ~ "#496389"
+        )
+    )
+
+annotated_molecule_rank_plot <- pg_data[[]] |>
+    select(sample_id, rank, n_umi, tau_type) |>
+    filter(tau_type == "normal") |>
+    ggplot(aes(x = rank, y = n_umi)) +
+    geom_point(
+        data = point_colors,
+        aes(x = rank, y = n_umi),
+        color = point_colors$col,
+        size = 1,
+        alpha = 0.8
+    ) +
+    geom_hline(
+        data = hline_normal,
+        aes(yintercept = cutoff),
+        linetype = "dashed",
+        color = "red"
+    ) +
+    facet_wrap(
+        ~ factor(sample_id, levels = sort(unique(sample_id))),
+        nrow = 2
+    ) +
+    geom_text(
+        data = umi_normal_count,
+        aes(x = Inf, y = Inf, label = paste("Cells:", normal_count)),
+        hjust = 1.2,
+        vjust = 1.8,
+        size = 4,
+        color = "#496389",
+        position = position_nudge(y = 0.5)
+    ) +
+    geom_text(
+        data = umi_outliers,
+        aes(x = 10, y = Inf, label = paste("High: ", high_count)),
+        vjust = 1.8,
+        hjust = 0.8,
+        size = 4,
+        color = "#FFA292",
+        position = position_nudge(y = -0.5)
+    ) +
+    geom_text(
+        data = umi_outliers,
+        aes(x = 10, y = n_umi_min_threshold, label = paste("Low: ", low_count)),
+        size = 4,
+        vjust = 0.2,
+        hjust = 0.7,
+        color = "#FFA292",
+        position = position_nudge(y = -0.5)
+    ) +
+    geom_rug(
+        aes(x = rank),
+        linewidth = 1,
+        sides = "l",
+        alpha = 0.05
+    ) +
+    scale_x_log10() +
+    scale_y_log10() +
+    coord_equal(ratio = 1.5) +
+    theme_minimal(base_size = 18) +
+    labs(x = "Component Rank", y = "UMIs", color = "UMI Normal") +
+    theme(
+        aspect.ratio = 1,
+        legend.position = "top",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.border = element_rect(
+            color = "black",
+            fill = NA,
+            linewidth = 0.5
+        )
+    )
+save_plot(
+    filename = "results/01_quality_control/molecule_rank_plots/quality_control_annotated_molecule_rank_plot",
+    plot = annotated_molecule_rank_plot,
+    width = 15,
+    height = 12,
+    create_dir = TRUE
+)
+```
+
+### 1.3.3. Unspecific Background filtering
+
+In PNA experiments, isotype control antibodies are included to measure unspecific binding and serve as important quality controls for background signal. The fraction of total signal that is derived from isotype controls in each cell provides a quantitative estimate of non-specific background. Generally, cells with a high proportion of isotype signal are more likely to be dominated by artefactual binding rather than true biological signal. Therefore, by examining the fraction of isotype control antibodies per cell, we can assess the overall level of background in each sample and identify cells potentially affected by excessive non-specific binding, which may need to be excluded from downstream analysis.
+
+```{r}
+#| label: quality_control_isotype_controls
+
+isotype_fraction_plot <- create_violin_plot(
+    data = pg_data,
+    var_x = "sample_alias",
+    var_y = "isotype_fraction",
+    palette = sample_palette,
+    data_cutoff = 1
+) +
+  geom_hline(
+    yintercept = isotype_fraction_threshold,
+    linetype = "dashed",
+    color = "red"
+  ) 
+
+
+save_plot(
+    filename = 
+        "results/01_quality_control/violin_plots/quality_control_isotype_controls",
+    plot = isotype_fraction_plot,
+    width = 10,
+    height = 8
+)
+```
+
+### 1.3.4. Tau score filtering
+
+The Tau score measures the heterogeneity of protein composition per cell, and can be used to detect various types of outliers. Cells with high Tau have high counts for few proteins, while cells with low Tau have a more heterogeneous composition of proteins than we would expect from a normal cell. As these outliers likely represent technical artefacts, we can remove them from the dataset.
+
+```{r}
+#| label: quality_control_tau_score
+
+tau_score_plot <- TauPlot(pg_data, group_by = "sample_alias")
+
+save_plot(
+    filename = 
+        "results/01_quality_control/tau_plots/quality_control_tau_score",
+    plot = tau_score_plot,
+    width = 10,
+    height = 8,
+    create_dir = TRUE
+)
+```
+
+## 1.4. Select markers for dimensionality reduction (optional)
+
+This optional step allows users to filter markers based on expression levels, retaining only those markers that are likely to be positive in at least one cell population within the dataset. Marker selection is not a one-size-fits-all process; the optimal selection criteria depend on the specific dataset characteristics and experimental design.
+
+This section demonstrates one approach using counts per million (CPM) thresholds. For each marker, the 50th percentile (median) and 95th percentile of CPM values are calculated across all cells. Markers are then selected based on whether their 95th percentile exceeds a defined threshold. This threshold should be adjusted according to the background signal levels in the dataset and the expected presence of specific markers based on the experimental design.
+
+In the example provided here, the threshold is set to 500 CPM at the 95th percentile. This effectively means that markers are retained if they are expressed at detectable levels in cell populations comprising at least 5% of the sample. Comparing the 95th percentile to the 50th percentile (median) provides insight into the variability of marker expression across cells, helping to distinguish markers with consistent expression from those with highly variable or rare expression patterns.
+
+
+```{r}
+#| label: quality_control_select_markers
+
+marker_cpm_p95_threshold <- 2000
+
+count_data <-
+    LayerData(pg_data, "counts")
+cpm_data <-
+    count_data |>
+    sweep(2, colSums(count_data), "/")
+
+cpm_data <- cpm_data * 1e6
+
+cpm_quantiles <-
+    cpm_data |>
+    apply(1, function(x) quantile(x, c(0.5, 0.99))) |>
+    t() |>
+    as_tibble(rownames = "marker") |>
+    mutate(kept = `99%` > marker_cpm_p95_threshold)
+
+cpm_quantiles |>
+    ggplot(aes(`50%`, `99%` / `50%`, color = kept)) +
+    geom_point(size = 0.1) +
+    geom_text(aes(label = marker), vjust = -0.5, size = 2) +
+    scale_x_log10(expand = expansion(0.2)) +
+    scale_y_log10() +
+    theme_bw() +
+    labs(
+        title = "Marker selection based on CPM",
+        x = "50th percentile of CPM (log10 scale)",
+        y = "95th / 50th percentile of CPM (log10 scale)"
+    )
+save_plot(
+    filename = "results/01_quality_control/marker_selection_plots/quality_control_marker_selection_cpm",
+    width = 12,
+    height = 4
+)
+
+
+cpm_quantiles |>
+    arrange(`99%`) |>
+    mutate(marker = factor(marker, levels = marker)) |>
+    ggplot(aes(x = marker, y = `99%`, fill = kept)) +
+    geom_col() +
+    scale_y_log10() +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 5)) +
+    labs(
+        title = "95th percentile of CPM per marker",
+        x = "Marker",
+        y = "95th percentile of CPM (log10 scale)"
+    )
+save_plot(
+    filename = "results/01_quality_control/marker_selection_plots/quality_control_marker_selection_cpm_barplot",
+    width = 12,
+    height = 4
+)
+
+selected_markers <-
+    cpm_quantiles |>
+    filter(kept) |>
+    pull(marker)
+
+
+```
+
+# Calculate component overlap
+
+```{r}
+#| label: quality_control_component_overlap
+
+
+
+edgelists <-
+  pixelatorR:::.lazy_load_table(
+  fs_map = FSMap(pg_data),
+  table_name = "edgelist",
+  union = FALSE
+)
+
+component_overlap <-
+  pixelatorRinternal::calculate_component_overlap(
+    edgelists[[1]],
+    edgelists[[2]]
+  )
+
+component_overlap |> 
+  group_by(component_1) |> 
+  filter(!is.na(component_2)) |> 
+  top_n(1, n) |> 
+  arrange(-n_1) |> 
+  mutate(component_1 = factor(component_1, levels = unique(component_1))) |> 
+  ggplot(aes(rank(n_1), n_1, color = max_overlap)) +
+  geom_point() +
+  scale_y_log10()
+
+
+plot_data <- 
+  component_overlap |> 
+  group_by(component_1) |> 
+  filter(!is.na(component_2)) |> 
+  top_n(1, n) |> 
+  arrange(-max_overlap) |> 
+  mutate(component_1 = factor(component_1, levels = unique(component_1))) |>
+  select(1, 2, n, n_1, n_2) |> 
+  mutate(n_1 = n_1 - n, 
+         n_2 = n_2 - n) |> 
+  pivot_longer(cols = c(n, n_1, n_2),
+               names_to = "edge_type",
+               values_to = "n_edges") |> 
+  group_by(component_1, component_2) |> 
+  mutate(n_edges = n_edges / sum(n_edges)) |>
+  group_by(edge_type) |> 
+  summarise(n_edges = mean(n_edges)) |> 
+  mutate(edge_type = c(
+    "n" = "SBX&ILL",
+    "n_1" = "SBX",
+    "n_2" = "ILL"
+  )[edge_type]
+  )
+    
+
+
+plot_data |> 
+  ggplot(aes(1, n_edges, fill = edge_type)) +
+  geom_col(position = "stack") +
+  # scale_fill_manual(values = c("n" = "#496389",
+  #                              "n_1" = "#FFA292",
+  #                              "n_2" = "#92C6FF"),
+  #                   labels = c("n" = "Overlapping edges",
+  #                              "n_1" = "Unique edges SBX",
+  #                              "n_2" = "Unique edges ILL")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = "Component",
+    y = "Number of edges",
+    fill = "Edge type",
+    title = "Edge composition of overlapping components between SBX and ILL",
+    subtitle = "Each bar represents a component pair"
+  )
+
+
+
+overlapp_eulervenn <- 
+  eulerr::euler(round(deframe(plot_data), 3), shape = "ellipse")
+
+overlapp_eulervenn %>% 
+  plot(quantities = TRUE)
+
+overlapp_eulervenn$ellipses %>% 
+  as_tibble(rownames = "label") %>% 
+  ggplot(aes(fill = label)) +
+  ggforce::geom_ellipse(aes(x0 = h, y0 = k, a = a, b = b, angle = phi),
+               alpha = 0.5, 
+               color = NA) +
+  geom_text(aes(x = h, y = k, label = label),
+            size = 6) +
+  coord_fixed() +
+  theme_void()
+
+####
+component_overlap %>%
+  filter(complete.cases(.)) %>%
+  # filter(n_1 > 60000 | n_2 > 60000) %>%
+  ggplot(aes(overlap_1, overlap_2)) +
+  geom_abline() +
+  geom_point(size = 1) +
+  scale_x_continuous(limits = c(0, 1), expand = expansion(0)) +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(0)) +
+  coord_fixed() +
+  theme_bw() +
+  labs(
+    x = "Overlap in component SBX",
+    y = "Overlap in component ILL",
+    title = "Component overlap between SBX and ILL",
+    subtitle = "Each point represents a component pair"
+  )
+
+
+overlap_1to1 <-
+  component_overlap %>%
+  filter(complete.cases(.)) %>%
+  filter(n_1 > 1000 | n_2 > 1000) %>%
+  filter(n > 1000)
+
+overlap_1to1 %>%
+  ggplot(aes(n_1, n_2)) +
+  # geom_abline() +
+  # geom_abline(slope = 1, intercept = log10(0.345),
+  #             linetype = "dashed", color = "gray") +
+  geom_point(size = 0.5) +
+  geom_smooth(method = "lm") +
+  geom_text(
+    data = . %>% 
+      summarise(cor_val = cor(log10(n_1), log10(n_2))),
+    aes(x = range(overlap_1to1$n_1)[1], y = Inf, label = paste0("r2 = ", round(cor_val^2, 3))),
+    hjust = 0,
+    vjust = 3,
+    size = 5
+  ) +
+  # scale_x_log10(limits = range(overlap_1to1$n_1)) +
+  # scale_y_log10(limits = range(overlap_1to1$n_1)) +
+  scale_x_log10() +
+  scale_y_log10() +
+  coord_fixed() +
+  # coord_fixed(1/lm(log10(n_2) ~ log10(n_1), data = overlap_1to1)$coefficients["n_1"]) +
+  theme_bw() +
+  labs(
+    x = "Edges in component SBX",
+    y = "Edges in component ILL",
+    title = "Number of edges in overlapping components",
+    subtitle = "Each point represents a paired component"
+  )
+
+save_plot(
+  filename = "results/01_quality_control/component_overlap_plots/quality_control_component_overlap_edges_scatterplot",
+  plot = last_plot(),
+  width = 5,
+  height = 5
+)
+
+
+overlap_1to1 %>%
+  left_join(FetchData(pg_data, "n_umi") |> 
+              as_tibble(rownames = "component") |>
+              select(component, n_umi),
+            by = c("component_1" = "component")) %>%
+  left_join(FetchData(pg_data, "n_umi") |> 
+              as_tibble(rownames = "component") |>
+              select(component, n_umi),
+            by = c("component_2" = "component"),
+            suffix = c("_1", "_2")) |> 
+  ggplot(aes(n_umi_1, n_umi_2)) +
+  # geom_abline() +
+  # geom_abline(slope = 1, intercept = log10(0.345),
+  #             linetype = "dashed", color = "gray") +
+  geom_point(size = 0.5) +
+  geom_smooth(method = "lm") +
+  geom_text(
+    data = . %>% 
+      summarise(cor_val = cor(log10(n_umi_1), log10(n_umi_2))),
+    aes(x = range(overlap_1to1$n_1)[1], y = Inf, label = paste0("r2 = ", round(cor_val^2, 3))),
+    hjust = 0,
+    vjust = 3,
+    size = 5
+  ) +
+  # scale_x_log10(limits = range(overlap_1to1$n_1)) +
+  # scale_y_log10(limits = range(overlap_1to1$n_1)) +
+  scale_x_log10() +
+  scale_y_log10() +
+  coord_fixed() +
+  # coord_fixed(1/lm(log10(n_2) ~ log10(n_1), data = overlap_1to1)$coefficients["n_1"]) +
+  theme_bw() +
+  labs(
+    x = "Nodes in component SBX",
+    y = "Nodes in component ILL",
+    title = "Number of nodes in overlapping components",
+    subtitle = "Each point represents a paired component"
+  )
+
+save_plot(
+  filename = "results/01_quality_control/component_overlap_plots/quality_control_component_overlap_nodes_scatterplot",
+  plot = last_plot(),
+  width = 5,
+  height = 5
+)
+
+overlap_1to1 %>%
+  select(SBX = overlap_1,
+         ILL = overlap_2) %>%
+  pivot_longer(everything(), names_to = "overlap_type", values_to = "overlap") %>%
+  ggplot(aes(overlap_type, overlap)) +
+  geom_violin(draw_quantiles = 0.5, fill = "gray90") +
+  geom_text(stat = "summary",
+            fun = median,
+            aes(label = round(after_stat(y), 2)),
+            vjust = -0.5) +
+  theme_bw() +
+  labs(
+    x = "Overlap type",
+    y = "Overlap",
+    title = "Distribution of overlap in components",
+  )
+
+
+pg_data[[]] |> 
+  as_tibble(rownames = "component") |>
+  select(component, sample_id, n_umi) |> 
+  group_by(sample_id) |>
+  mutate(
+    rank = rank(-n_umi, ties.method = "random")
+  ) |> 
+  ungroup() |>
+  left_join(overlap_1to1, by = c("component" = "component_1")) |>
+  mutate(component_2 = if_else(is.na(component_2), component, component_2)) |> 
+  ggplot(aes(rank, n_umi, group = component_2)) +
+  geom_path(alpha = 0.3) +
+  geom_point(aes(color = sample_id)) +
+  
+    geom_hline(
+        yintercept = n_umi_min_threshold,
+        linetype = "dashed",
+        color = "red"
+    ) +
+    geom_hline(
+        yintercept = n_umi_max_threshold,
+        linetype = "dashed",
+        color = "red"
+    ) +
+  # scale_x_log10() +
+  scale_y_log10() +
+  
+  theme_bw()
+
+
+
+
+pg_data[[]] |> 
+  as_tibble(rownames = "component") |>
+  select(component, sample_id, n_umi) |> 
+  group_by(sample_id) |>
+  mutate(
+    rank = rank(-n_umi, ties.method = "random")
+  ) |> 
+  ungroup() |>
+  left_join(overlap_1to1, by = c("component" = "component_1")) |>
+  mutate(component_2 = if_else(is.na(component_2), component, component_2)) |> 
+  select(sample_id, rank, component_2) |> 
+  pivot_wider(names_from = sample_id, values_from = rank, values_fill = NA) |> 
+  ggplot(aes(S1_SBX, S2_ILL)) +
+  geom_point()
+
+```
+
+
+
+
+# 2. Data processing
+
+## 2.1. Normalize and scale data
+
+PNA data are normalized using centered log-ratio (CLR) transformation over margin 2, which normalizes counts per cell by dividing by the geometric mean across all markers for that cell. This normalization approach effectively accounts for differences in sequencing depth between cells while preserving the relative differences in marker abundance within each cell. The CLR transformation is particularly well-suited for compositional data like PNA, where the total signal per cell can vary substantially.
+
+Following normalization, the data are Z-score scaled per marker. This transformation centers each marker's distribution around zero and scales it to unit variance. Z-score scaling is essential for downstream dimensionality reduction and clustering analyses, as it ensures that all markers contribute equally to the analysis regardless of their absolute abundance levels. Without this scaling step, highly abundant markers would dominate the analysis, potentially obscuring important signals from less abundant but biologically relevant markers.
+
+```{r}
+#| label: data_processing_normalize_scale
+
+filtered_sbx_cells <- 
+  pg_data |>
+  subset(sample_id == "S1_SBX") |> 
+  # Filter cells based on quality control thresholds
+  subset(tau_type == "normal") |> 
+  subset(n_umi > n_umi_min_threshold & 
+           n_umi < n_umi_max_threshold) |> 
+  subset(isotype_fraction < isotype_fraction_threshold) |> 
+  colnames()
+
+filtered_cells <- 
+  overlap_1to1 |> 
+  filter(component_1 %in% filtered_sbx_cells) |> 
+  select(component_1, component_2) |> 
+  unlist() |> 
+  unique() 
+
+pg_data <-
+  pg_data |>
+  subset(cells = filtered_cells) |>
+  # Data normalization
+  NormalizeData(normalization.method = "CLR", margin = 2) |>
+  # Z score scaling
+  ScaleData()
+
+```
+
+## 2.2. Dimensionality reduction
+
+Principal Component Analysis (PCA) is performed to extract the main axes of variation in the data. The first 10-20 principal components (PCs) are typically used for downstream analysis, though this number should be adjusted based on the specific dataset and experimental design. As a general guideline, the selected PCs should explain a substantial portion of the total variance while avoiding overfitting to noise. Principal components often capture technical effects, cell states, or experimental conditions, so the number of PCs can be adjusted according to the expected number of cell states or the complexity of the experimental design. The number of PCs is set to 20 by default, but can be adjusted as needed.
+
+If marker selection was performed in the Quality Control section, those selected markers can be used for PCA instead of all markers. This optional step helps reduce noise from low-abundance or non-informative markers and can improve the interpretability of the results. 
+
+Following PCA, Uniform Manifold Approximation and Projection (UMAP) is applied to visualize the data in a two-dimensional space. UMAP is a non-linear dimensionality reduction technique that preserves both local neighborhood structure and global relationships in the data. This makes it particularly well-suited for visualizing complex single-cell PNA datasets, where it can reveal cell type clusters and relationships that may not be apparent in higher-dimensional space. The number of neighbors is set to 30 by default, but can be adjusted as needed.
+
+```{r}
+#| label: data_processing_dimensionality_reduction
+
+selected_markers <- 
+  c("HLA-ABC", "B2M", "CD11b", "CD11c", "CD18", "CD82", "CD8", 
+    "TCRab", "HLA-DR", "CD45", "CD14", "CD16", "CD19", "CD45RB", 
+    "CD44", "CD52", "CD59", "CD45RA", "CD36", "CD2", "CD29", "CD5", 
+    "CD162", "CD27", "CR1", "CD26", "CD49d", "CD37", "CD41", "CD20", 
+    "CD64", "CD22", "Siglec-7", "CD25", "PD-1", "NKp46", "CD86", 
+    "CD13", "ADAM10", "KIR2DL1", "KIR2DL2/DL3", "NKG2A", "CD169", 
+    "CD1c", "DNAM-1", "CD28", "SLAMF6", "CD45RO", "CD49e", "CD56", 
+    "CD79a", "CD81", "LILRB1", "CD93", "IgD", "IgE", "IgM", "KLRG1", 
+    "CD103", "CCR9", "CD21", "CD277", "LAIR1", "CD371", "CD89", "CD90", 
+    "GPR56", "HLA-DQ", "HLA-DR-DP-DQ", "Siglec-9", "Fas", 
+    "CD127", "CD141", "CD31", "CD6", "CD57", "CD73", "TIM-3", "TIGIT", 
+    "ICAM-2", "CD123", "CD150", "KIR", "CD161", "CD180", "CCR1", 
+    "CCR2", "CD1d", "CD200", "Ly9", "CD24", "2B4", "BAFF-R", "ICOS", 
+    "CD32", "CD33", "NKp30", "CD38", "CD39", "CD40", "CD48", "ICAM-3", 
+    "CD55", "CD58", "CD62P", "CD69", "CD72", "CD84", "CD9", "CD94", 
+    "CD3e", "CD4", "CD11a", "CD43", "CD7", "CD53", "CD302", 
+    "VISTA", "CD66b", "Dectin-1", "ICAM-1", "CD47", "NKG2D"
+  )
+
+npcs <- 20
+n_neighbors <- 30
+pg_data <-
+    pg_data |>
+    RunPCA(npcs = npcs, features = selected_markers) |>
+    RunUMAP(reduction = "pca", dims = 1:20, n.neighbors = n_neighbors)
+
+pca_red <-
+    Reductions(pg_data, "pca")
+
+elbow_plot_pca <- pca_red@stdev |>
+    as_tibble(rownames = "PC") |>
+    mutate(PC = PC |> str_remove("PC_") |> as.integer()) |>
+    ggplot(aes(PC, value)) +
+    geom_line() +
+    geom_point() +
+    theme_bw() +
+    labs(
+        title = "PCA Elbow Plot",
+        x = "Principal Component",
+        y = "Standard Deviation"
+    )
+save_plot(
+    filename = "results/02_data_processing/dimensionality_reduction_plots/data_processing_pca_elbow_plot",
+    width = 6,
+    height = 4,
+    plot = elbow_plot_pca
+)
+
+cell_metadata <-
+    FetchData(pg_data, c("sample_alias", "condition")) |>
+    as_tibble(rownames = "cell_id")
+
+pca_embeddings <- Embeddings(pg_data, "pca") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata, by = "cell_id") |>
+    ggplot(aes(PC_1, PC_2, color = sample_alias)) +
+    geom_point() +
+    coord_fixed() +
+    scale_color_manual(values = sample_palette) +
+    theme_bw()
+
+save_plot(
+    filename = "results/02_data_processing/dimensionality_reduction_plots/data_processing_pca",
+    width = 6,
+    height = 4,
+    plot = pca_embeddings
+)
+
+Embeddings(pg_data, "umap") |>
+    as_tibble(rownames = "cell_id") %>%
+  slice_sample(n = nrow(.)) |>
+    left_join(cell_metadata, by = "cell_id") |>
+    ggplot(aes(umap_1, umap_2, color = sample_alias)) +
+    geom_point(size = 0.1) +
+    coord_fixed() +
+    scale_color_manual(values = c("#DD4154", "#6588CF")) +
+    theme_bw() +
+  theme(panel.grid = element_blank()) +
+  labs(
+    title = "UMAP of PCA reduction",
+    x = "UMAP 1",
+    y = "UMAP 2"
+  )
+
+save_plot(
+    filename = "results/02_data_processing/dimensionality_reduction_plots/data_processing_umap",
+    width = 6,
+    height = 4
+)
+
+Embeddings(pg_data, "pca") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata, by = "cell_id") |>
+  left_join(overlap_1to1, by = c("cell_id" = "component_1")) |>
+  mutate(component_2 = if_else(is.na(component_2), cell_id, component_2)) |> 
+    ggplot(aes(PC_1, PC_2, color = sample_alias)) +
+  geom_path(aes(group = component_2), alpha = 0.3,
+            color = "black") +
+    geom_point() +
+    coord_fixed() +
+    scale_color_manual(values = sample_palette) +
+    theme_bw()
+
+Embeddings(pg_data, "umap") |>
+  as_tibble(rownames = "cell_id") |>
+  left_join(cell_metadata, by = "cell_id") |>
+  left_join(overlap_1to1, by = c("cell_id" = "component_1")) |>
+  mutate(component_2 = if_else(is.na(component_2), cell_id, component_2)) |> 
+  ggplot(aes(umap_1, umap_2, color = sample_alias)) +
+  geom_path(aes(group = component_2), alpha = 0.3,
+            color = "black") +
+  geom_point() +
+  coord_fixed() +
+  scale_color_manual(values = sample_palette) +
+  theme_bw()
+```
+
+
+
+
+
+## 2.3. Data harmonization
+
+Data harmonization is an optional step that can be beneficial when experiments contain multiple samples with similar cell types that do not cluster together well due to technical or biological variability. The goal of data harmonization is to align similar cell types across samples so that they cluster together, facilitating the identification of shared cell types between samples even when they exhibit somewhat different protein expression profiles. This approach is particularly useful in experiments with batch effects, technical variability, or biological sources of variation such as donor differences or stimulation-induced perturbations.
+
+The Harmony algorithm is used here to harmonize the data based on sample ID, though any sample metadata column can be specified for harmonization. The algorithm integrates information across samples while preserving biological variation within each sample.
+
+**Important considerations**: Users should carefully inspect the harmonized data to ensure that harmonization has not removed important biological variation and that similar cell types are indeed clustering together across samples. In many cases, harmonization is not necessary, particularly when samples are already well-mixed and similar cell types cluster together naturally without harmonization.
+
+The harmonization process generates a new dimensional reduction called "harmony", which is used for UMAP visualization and clustering. Importantly, the original data remains unchanged, so harmonization is used primarily to identify common cell identities across samples rather than to modify the underlying expression data.
+
+```{r}
+#| label: data_processing_data_harmonization
+pg_data <-
+    pg_data |>
+    RunHarmony(
+        group.by.vars = "sample_alias",
+        plot_convergence = FALSE,
+    ) |>
+    RunUMAP(
+        reduction = "harmony",
+        dims = 1:20,
+        reduction.name = "harmony_umap",
+        n.neighbors = n_neighbors
+    )
+
+cell_metadata <-
+    FetchData(pg_data, c("sample_alias", "condition")) |>
+    as_tibble(rownames = "cell_id")
+
+harmony_embeddings <- Embeddings(pg_data, "harmony") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata, by = "cell_id") |>
+    ggplot(aes(harmony_1, harmony_2, color = sample_alias)) +
+    geom_point() +
+    coord_fixed() +
+    scale_color_manual(values = sample_palette) +
+    theme_bw()
+
+save_plot(
+    filename = "results/02_data_processing/dimensionality_reduction_plots/data_processing_harmony",
+    width = 6,
+    height = 4,
+    plot = harmony_embeddings
+)
+
+harmony_umap_embeddings <- Embeddings(pg_data, "harmony_umap") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata, by = "cell_id") |>
+    ggplot(aes(harmonyumap_1, harmonyumap_2, color = sample_alias)) +
+    geom_point() +
+    coord_fixed() +
+    scale_color_manual(values = sample_palette) +
+    theme_bw()
+
+save_plot(
+    filename = "results/02_data_processing/dimensionality_reduction_plots/data_processing_harmonyumap",
+    width = 6,
+    height = 4,
+    plot = harmony_umap_embeddings
+)
+
+```
+
+## 2.4. Clustering
+
+Clustering groups cells with similar protein expression profiles into discrete clusters, which can subsequently be annotated as distinct cell types or cell states. This step is essential for identifying and characterizing the cellular composition of the dataset.
+
+Leiden clustering is performed on a k-nearest neighbor graph constructed from the dimensionality-reduced space (either PCA or Harmony reduction). The algorithm identifies communities of cells that are more densely connected to each other than to cells in other communities, effectively partitioning the data into biologically meaningful groups.
+
+The resolution parameter is a critical hyperparameter that controls the granularity of the clustering. Higher resolution values result in more fine-grained clusters (more clusters with fewer cells each), while lower values produce broader clusters (fewer clusters with more cells each). The optimal resolution depends on the dataset characteristics, experimental design, and the level of cellular heterogeneity expected. Users should test multiple resolution values (e.g., 0.3, 0.5, 0.7, 1.0) and visually inspect the resulting clusters on UMAP plots to determine which resolution best captures the expected cell type diversity without over-clustering or under-clustering the data. The resolution is set to 0.5 by default, but can be adjusted as needed.
+
+```{r}
+#| label: data_processing_clustering
+
+pg_data <-
+    pg_data |>
+    FindNeighbors(reduction = "harmony", dims = 1:10) |>
+    FindClusters(random.seed = 1, resolution = 0.5)
+
+cell_metadata <-
+    FetchData(pg_data, c("sample_alias", "condition", "seurat_clusters")) |>
+    as_tibble(rownames = "cell_id")
+
+harmony_clusters_embeddings <- Embeddings(pg_data, "harmony") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata, by = "cell_id") |>
+    ggplot(aes(harmony_1, harmony_2, color = seurat_clusters)) +
+    geom_point() +
+    coord_fixed() +
+    scale_color_manual(values = cluster_palette) +
+    theme_bw()
+
+save_plot(
+    filename = "results/02_data_processing/clustering_plots/data_processing_harmony_clusters",
+    width = 6,
+    height = 4,
+    plot = harmony_clusters_embeddings
+)
+
+harmony_umap_clusters_embeddings <- Embeddings(pg_data, "harmony_umap") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata, by = "cell_id") |>
+    ggplot(aes(harmonyumap_1, harmonyumap_2, color = seurat_clusters)) +
+    geom_point() +
+    coord_fixed() +
+    scale_color_manual(values = cluster_palette) +
+    theme_bw()
+
+save_plot(
+    filename = "results/02_data_processing/clustering_plots/data_processing_harmonyumap_clusters",
+    width = 6,
+    height = 4,
+    plot = harmony_umap_clusters_embeddings
+)
+
+```
+
+## 2.6. Annotation
+
+### 2.6.1. Automatic annotation
+
+Automatic cell annotation is performed by matching each cell's protein expression profile to annotated cells in a reference peripheral blood mononuclear cell (PBMC) dataset using label transfer methods. This approach provides an initial annotation framework that can accelerate the annotation process.
+
+**Important limitations and recommendations**: Automated annotations should be interpreted with caution, particularly when the sample composition differs substantially from the PBMC reference dataset. For example, annotations may be unreliable for certain stimulated samples, cell lines, or tissues that are not well-represented in the reference. Additionally, automated methods may not capture cell states or subtypes that are specific to the experimental conditions.
+
+All automated annotations should be inspected, verified, and adjusted as necessary. Automated annotation serves as a starting point, but manual review and refinement are essential to ensure accurate and context-appropriate cell type assignments. Users should carefully examine marker expression patterns, differential abundance results, and UMAP visualizations to validate and refine the automated annotations before proceeding with downstream analyses. 
+
+```{r}
+#| label: data_processing_annotation
+
+# Load reference dataset
+reference <- pixelatorES::read_annotation_reference()
+
+# Set names of annotation columns in reference
+reference$l1_annotation <- reference$celltype.l1
+reference$l2_annotation <- reference$celltype.l2
+
+# Annotation by label transfer
+pg_data <-
+    pg_data |>
+    AnnotateCells(
+        reference = reference,
+        reference_groups = c("l1_annotation", "l2_annotation"),
+        reference_assay = "PNA",
+        query_assay = "PNA",
+        # Summarise annotations by cluster, adding an extra column with majority vote
+        summarize_by_column = "seurat_clusters",
+        normalization_method = "CLR",
+        method = "nmf"
+    )
+
+
+cell_metadata <-
+    FetchData(pg_data, c(
+        "sample_alias", "condition", "seurat_clusters",
+        "l1_annotation_summary", "l2_annotation_summary",
+        "l1_annotation", "l2_annotation"
+    )) |>
+    as_tibble(rownames = "cell_id")
+
+# L1 automatic annotation - summarised by cluster
+harmony_umap_l1_annotation_summary_plot <- Embeddings(pg_data, "harmony_umap") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata,
+        by = "cell_id"
+    ) |>
+    ggplot(aes(harmonyumap_1, harmonyumap_2, color = l1_annotation_summary)) +
+    geom_point() +
+    geom_text(
+        data = . %>%
+            group_by(l1_annotation_summary) %>%
+            summarise(
+                harmonyumap_1 = median(harmonyumap_1),
+                harmonyumap_2 = median(harmonyumap_2)
+            ),
+        aes(label = l1_annotation_summary),
+        size = 3,
+        color = "black"
+    ) +
+    coord_fixed() +
+    scale_color_manual(values = cell_palette) +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+save_plot(
+    filename = "results/02_data_processing/annotation_plots/automatic_annotation/data_processing_harmonyumap_l1_annotation_summary",
+    width = 6,
+    height = 4,
+    plot = harmony_umap_l1_annotation_summary_plot
+)
+
+
+# L1 automatic annotation - annotated by cell
+harmony_umap_l1_annotation_plot <- Embeddings(pg_data, "harmony_umap") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata,
+        by = "cell_id"
+    ) |>
+    ggplot(aes(harmonyumap_1, harmonyumap_2, color = l1_annotation)) +
+    geom_point() +
+    geom_text(
+        data = . %>%
+            group_by(l1_annotation) %>%
+            summarise(
+                harmonyumap_1 = median(harmonyumap_1),
+                harmonyumap_2 = median(harmonyumap_2)
+            ),
+        aes(label = l1_annotation),
+        size = 3,
+        color = "black"
+    ) +
+    coord_fixed() +
+    scale_color_manual(values = cell_palette) +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+save_plot(
+    filename = "results/02_data_processing/annotation_plots/automatic_annotation/data_processing_harmonyumap_l1_annotation",
+    width = 6,
+    height = 4,
+    plot = harmony_umap_l1_annotation_plot
+)
+
+
+# L2 automatic annotation - summarised by cluster
+harmony_umap_l2_annotation_summary_plot <- Embeddings(pg_data, "harmony_umap") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata,
+        by = "cell_id"
+    ) |>
+    ggplot(aes(harmonyumap_1, harmonyumap_2, color = l2_annotation_summary)) +
+    geom_point() +
+    geom_text(
+        data = . %>%
+            group_by(l2_annotation_summary) %>%
+            summarise(
+                harmonyumap_1 = median(harmonyumap_1),
+                harmonyumap_2 = median(harmonyumap_2)
+            ),
+        aes(label = l2_annotation_summary),
+        size = 3,
+        color = "black"
+    ) +
+    coord_fixed() +
+    scale_color_manual(values = cell_palette) +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+save_plot(
+    filename = "results/02_data_processing/annotation_plots/automatic_annotation/data_processing_harmonyumap_l2_annotation_summary",
+    width = 6,
+    height = 4,
+    plot = harmony_umap_l2_annotation_summary_plot
+)
+
+# L2 automatic annotation - annotated by cell
+harmony_umap_l2_annotation_plot <- Embeddings(pg_data, "harmony_umap") |>
+    as_tibble(rownames = "cell_id") |>
+    left_join(cell_metadata,
+        by = "cell_id"
+    ) |>
+    ggplot(aes(harmonyumap_1, harmonyumap_2, color = l2_annotation)) +
+    geom_point() +
+    geom_text(
+        data = . %>%
+            group_by(l2_annotation) %>%
+            summarise(
+                harmonyumap_1 = median(harmonyumap_1),
+                harmonyumap_2 = median(harmonyumap_2)
+            ),
+        aes(label = l2_annotation),
+        size = 3,
+        color = "black"
+    ) +
+    coord_fixed() +
+    scale_color_manual(values = cell_palette) +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+save_plot(
+    filename = "results/02_data_processing/annotation_plots/automatic_annotation/data_processing_harmonyumap_l2_annotation",
+    width = 6,
+    height = 4,
+    plot = harmony_umap_l2_annotation_plot
+)
+
+# L1 cell type composition per sample (annotated by cell)
+cell_type_composition_per_sample <- FetchData(pg_data, c("sample_alias", "l1_annotation_summary")) |>
+    group_by(sample_alias, l1_annotation_summary) |>
+    count(name = "n_cells") |>
+    group_by(sample_alias) |>
+    mutate(prc_cells = 100 * n_cells / sum(n_cells)) |>
+    ggplot(aes(sample_alias, prc_cells, fill = l1_annotation_summary)) +
+    geom_col(position = "fill") +
+    geom_text(aes(label = paste0(round(prc_cells, 1), "%")),
+        position = position_fill(vjust = 0.5),
+        size = 3
+    ) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    scale_fill_manual(values = cell_palette) +
+    theme_bw() +
+    theme(
+        axis.text.x = element_text(angle = 60, hjust = 1)
+    ) +
+    labs(
+        title = "Cell type composition per sample",
+        x = "Sample",
+        y = "Cell type fraction"
+    )
+save_plot(
+    filename = "results/02_data_processing/annotation_plots/cell_type_composition/data_processing_cell_type_composition_per_sample",
+    width = 4,
+    height = 5,
+    plot = cell_type_composition_per_sample
+)
+
+
+# L1 cell type composition per sample (annotated by cell)
+FetchData(pg_data, c("sample_alias", "l2_annotation_summary")) |>
+    group_by(sample_alias, l2_annotation_summary) |>
+    count(name = "n_cells") |>
+    group_by(sample_alias) |>
+    mutate(prc_cells = 100 * n_cells / sum(n_cells),
+           l2_annotation_summary = factor(l2_annotation_summary, names(cell_palette))) |>
+    ggplot(aes(sample_alias, prc_cells, fill = l2_annotation_summary)) +
+    geom_col(position = "fill") +
+    geom_text(aes(label = paste0(round(prc_cells, 1), "%")),
+        position = position_fill(vjust = 0.5),
+        size = 3
+    ) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    scale_fill_manual(values = cell_palette) +
+    theme_bw() +
+    theme(
+        axis.text.x = element_text(angle = 60, hjust = 1)
+    ) +
+    labs(
+        title = "Cell type composition per sample",
+        x = "Sample",
+        y = "Cell type fraction"
+    )
+save_plot(
+    filename = "results/02_data_processing/annotation_plots/cell_type_composition/data_processing_cell_type_composition_per_sample",
+    width = 4,
+    height = 5,
+    plot = cell_type_composition_per_sample
+)
+
+
+FetchData(pg_data, c("sample_alias", "l2_annotation_summary")) |>
+    group_by(sample_alias, l2_annotation_summary) |>
+    count(name = "n_cells") |>
+    group_by(sample_alias) |>
+    mutate(prc_cells = n_cells / sum(n_cells),
+           l2_annotation_summary = factor(l2_annotation_summary, names(cell_palette))) |> 
+  select(sample_alias, l2_annotation_summary, prc_cells) |> 
+  pivot_wider(names_from = sample_alias, values_from = prc_cells, values_fill = 0) |>
+  ggplot(aes(l2_annotation_summary, S1_SBX - S2_ILL)) +
+  geom_col() +
+  theme_bw()
+
+
+```
+
+
+### Abundance
+
+```{r}
+
+FetchData(pg_data, c("sample_id", "CD3e", "HLA-ABC", "CD20"), layer = "data") |> 
+  as_tibble(rownames = "component") |>
+  pivot_longer(
+    cols = -c(1, 2),
+    names_to = "marker",
+    values_to = "abundance"
+  ) |>
+  left_join(select(overlap_1to1, component = component_1, component_2)) |> 
+  mutate(component_2 = ifelse(is.na(component_2), component, component_2)) |> 
+  select(-component) |> 
+  pivot_wider(names_from = sample_id, values_from = abundance) |>
+  ggplot(aes(S1_SBX, S2_ILL)) +
+  geom_abline() +
+  geom_point(size = 0.1) +
+  geom_text(
+    data = . %>%
+      group_by(marker) %>%
+      summarise(cor = cor(S1_SBX, S2_ILL)) ,
+    aes(label = paste0("r = ", round(cor, 3))),
+    x = Inf, y = -Inf,
+    hjust = 1.1, vjust = -0.5,
+    size = 6
+  ) +
+  facet_wrap(~marker) +
+  coord_fixed() +
+  theme_bw() +
+  theme(panel.grid = element_blank(), 
+        strip.background = element_rect(fill = NA, color = NA)
+        ) +
+  labs(
+    title = "Marker abundance comparison between samples",
+    x = "Roche SBX (CLR)",
+    y = "Illumina (CLR)"
+  )
+
+save_plot(
+  filename = "results/02_data_processing/abundance_comparison_between_samples/marker_abundance_comparison_between_samples",
+  width = 6,
+  height = 5,
+  plot = last_plot(),
+  create_dir = TRUE
+)
+```
+
+
+# 4. Colocalization score
+
+## Coloc heatmap
+
+```{r}
+
+interactions <- read.csv("biogrid_interactions.csv") |> 
+  as_tibble()
+
+cell_filter <- 
+  FetchData(pg_data, "l1_annotation_summary") |> 
+  filter( l1_annotation_summary == "CD4 T") |>
+  rownames()
+
+plot_data <- 
+  LayerData(pg_data, "data")[, cell_filter] |> 
+  rowMeans() |> 
+  enframe() |> 
+  arrange(-value) |> 
+  mutate(name = factor(name, unique(name))) 
+
+plot_data |>
+  ggplot(aes(name, value)) +
+  geom_col() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  ) 
+
+marker_filter <- 
+  plot_data |> 
+  head(30) |> 
+  pull(name)
+  
+  
+coloc_scores <- 
+pg_data |> 
+  subset(l1_annotation_summary == "CD4 T") |> 
+  ProximityScores(lazy = TRUE, meta_data_columns = "sample_id") |> 
+  filter(marker_1 %in% marker_filter,
+         marker_2 %in% marker_filter) |> 
+  collect()
+
+coloc_scores_summary <- 
+  SummarizeProximityScores(coloc_scores, group_vars = "sample_id")
+
+plot_order <- 
+  coloc_scores_summary |> 
+  filter(sample_id == "S1_SBX") |> 
+  select(marker_1, marker_2, mean_log2_ratio) |>
+  pivot_wider(names_from = marker_2, values_from = mean_log2_ratio) |> 
+  column_to_rownames("marker_1") |> 
+  as.matrix() |>
+  dist() |>
+  hclust() |> 
+  with(labels[order])
+
+coloc_scores_summary |> 
+  select(sample_id, marker_1, marker_2, mean_log2_ratio) |> 
+  left_join(interactions |> 
+              filter(!is.na(marker_A),
+                     !is.na(marker_B)) |> 
+              select(marker_1 = marker_A, marker_2 = marker_B) |> 
+              distinct() |> 
+              mutate(interaction = "yes")) %>% 
+  bind_rows(select(., sample_id, marker_1 = marker_2, marker_2 = marker_1, mean_log2_ratio, interaction)) |> 
+  distinct() |> 
+  mutate(marker_1 = factor(marker_1, levels = plot_order),
+         marker_2 = factor(marker_2, levels = plot_order),
+         mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 1, sign(mean_log2_ratio) * 1, mean_log2_ratio)) |> 
+  
+  ggplot(aes(marker_1, marker_2, fill = mean_log2_ratio)) +
+  geom_tile(data = . %>% 
+              filter(interaction == "yes"),
+            fill = NA, color = "black") +
+  geom_point(shape = 21, 
+             color = "white", 
+             size = 3) +
+  
+  facet_wrap(~sample_id) +
+  coord_fixed() +
+  scale_fill_gradientn(colors = PixelgenGradient(100, "BluesCherry"), limits = c(-1, 1)) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    title = "Colocalization scores for CD4 T cells",
+    x = "Marker 1",
+    y = "Marker 2",
+    fill = "Mean log2 ratio"
+  )
+
+save_plot(
+  filename = "results/04_colocalization/coloc_heatmap/coloc_heatmap_cd4_t_cells_all_samples",
+  width = 10,
+  height = 5,
+  plot = last_plot(),
+  create_dir = TRUE
+)
+
+
+coloc_scores_summary |> 
+  select(sample_id, marker_1, marker_2, mean_log2_ratio) |> 
+  left_join(interactions |> 
+              filter(!is.na(marker_A),
+                     !is.na(marker_B)) |> 
+              select(marker_1 = marker_A, marker_2 = marker_B, PUBMED_ID, PUBMED_AUTHOR) |> 
+              distinct() |> 
+              mutate(interaction = "yes")) |> 
+  filter(!is.na(PUBMED_ID)) |> 
+  filter(sample_id  == sample_id[1] ) |> 
+  print(n = 100)
+
+plot_order
+coloc_scores_summary |> 
+  filter(sample_id == "S1_SBX") |> 
+  ColocalizationHeatmap(
+    marker1_col = "marker_1",
+    marker2_col = "marker_2",
+    value_col = "mean_log2_ratio",
+    size_col = "pct_detected",
+    size_range = c(6, 6),
+    type = "dots",
+    cluster_cols = TRUE,
+    cluster_rows = TRUE,
+    colors = PixelgenGradient(100, "BluesCherry"),
+    legend_range = c(-1, 1)
+  ) +
+  ggtitle("Colocalization heatmap for CD4 T cells in sample S1")
+
+```
+
+
+
+## Spinning cell
+
+### SBX
+
+```{r}
+library(pbapply)
+
+candidate_cells <-
+  pg_data |> 
+  subset(l1_annotation_summary == "CD4 T") |> 
+  subset(sample_id == "S1_SBX") |> 
+  subset(n_umi > 100000 & n_umi < 150000) |> 
+  colnames()
+  
+trial_cells <- 
+  sample(candidate_cells, 10)
+  
+cgs <- 
+  pg_data |> 
+  subset(cells = trial_cells) |> 
+  LoadCellGraphs() |> 
+  CellGraphs()  
+
+cgs <- 
+  cgs |> 
+  pblapply(function(cg) {
+    cg <<- cg
+    
+    cg@cellgraph <- 
+      cg@cellgraph |> 
+      mutate(coreness = tidygraph::node_coreness()) |> 
+      filter(coreness > 1)
+    
+    nodes <- cg@cellgraph |> as_tibble() |> pull(name)
+    
+    cg@counts <- 
+      cg@counts[nodes, ]
+    
+    layt <- 
+      pixelatorR::layout_with_weighted_pmds(
+               cg@cellgraph,
+               dim = 3,
+               pivots = 200
+             ) |> 
+             as.data.frame()
+    
+    colnames(layt) <- c("x", "y", "z")
+    
+    cg@layout <- 
+      list(wpmds_3d = layt)
+    
+    return(cg)
+  })
+
+
+marker_levels <- 
+  c("CD14", "CD11a", "ICAM-3", "CD206", "CD45RA", "CD26", "CD34", 
+"CD21", "CD11b", "CD57", "CD13", "HLA-DQ", "CD29", "CD37", "Dectin-1", 
+"IgE", "mIgG2b", "CD93", "B2M", "CD73", "TALLA", "NKG2C", "IgM", 
+"CD47", "KIR", "LILRB1", "DC-SIGN", "GPR56", "TCRab", "CD4", 
+"NKp46", "CD1b", "CD69", "CD6", "CCR3", "CD84", "CD39", "CD19", 
+"CD49d", "CD16", "CCR2", "CD1a", "CD169", "CD150", "CD10", "c-Kit", 
+"PD-L2", "NKp30", "CD58", "Siglec-7", "Siglec-9", "CD1d", "Ly9", 
+"ICAM-2", "TCRgd", "CD48", "CD180", "CD103", "CD27", "CD123", 
+"CCR1", "CD71", "CD371", "CD55", "BCMA", "PD-1", "CD52", "CD94", 
+"CD40", "CD62P", "TIM-3", "NKG2A", "CD72", "TCRVb5", "HLA-DR-DP-DQ", 
+"KIR2DL2/DL3", "CD5", "CD86", "SLAMF7", "CX3CR1", "SLAMF6", "CD43", 
+"CD80", "CD40L", "NKG2D", "CD161", "CD32", "TCRVd2", "NKp80", 
+"CD162", "Fas", "CD45", "CD64", "CD79a", "TIGIT", "ICOS", "mIgG2a", 
+"CD127", "HLA-DR", "CD1c", "CR1", "PD-L1", "CD20", "CD141", "CD28", 
+"4-1BB", "CD163", "CD200", "CD7", "TCRVa7.2", "TCRVg9", "CD38", 
+"GITR", "ICAM-1", "CD8", "CD11c", "CD3e", "CD45RO", "CD24", "CD9", 
+"EpCAM", "CD22", "CD66b", "2B4", "IgD", "mIgG1", "CD56", "BAFF-R", 
+"CD138", "CD70", "DNAM-1", "CD53", "CD18", "CD89", "CD2", "OX40", 
+"CD277", "CD59", "CD41", "CD36", "KIR2DL1", "CD25", "CTLA-4", 
+"CD49e", "CCR9", "HLA-ABC", "CD45RB", "CD302", "CD31", "VISTA", 
+"CD33", "ADAM10", "KLRG1", "CD81", "CD90", "CD44", "CD82", "LAIR1"
+)
+
+dput(sample(marker_levels, length(marker_levels)))
+
+for (cg_name in names(cgs)) {
+  
+  cg <- cgs[[cg_name]]
+  
+  light_dir <- c(0.2, 0.3, 1)
+  light_dir <- light_dir / sqrt(sum(light_dir^2))
+  
+  xyz <- cg@layout$wpmds_3d %>% 
+    as_tibble(rownames = "umi") %>%
+    mutate(node_val_counts = cg@counts |> 
+             apply(1, function(rw) {colnames(cg@counts)[which(rw == 1)[1]]}), 
+           r = sqrt(x^2 + y^2 + z^2),
+           nx = x / r,
+           ny = y / r,
+           nz = z / r,
+           light_shade = nx * light_dir[1] +
+             ny * light_dir[2] +
+             nz * light_dir[3],
+           light_shade = scales::rescale(light_shade, to = c(0, 1)),
+           top_shade = scales::rescale(z),
+           depth_shade = scales::rescale(r))
+  xyz <- 
+    xyz |> 
+    mutate(
+      occlusion = scales::rescale(rowMeans(sqrt(FNN::get.knn(as.matrix(xyz[, c("x","y","z")]), k = 20)$nn.dist)), to = c(1, 0)),
+      node_val = 0 * light_shade + 
+        0.5 * top_shade + 
+        0.5 * depth_shade + 
+        occlusion)
+  
+  # Output file path for the animation
+  output_file <- paste0("3d_animation_sbx_", cg_name, "_shadow.gif")
+  
+  
+  if (!file.exists(output_file)) {
+    # Render the rotating layout and save as a GIF
+    render_rotating_layout(
+      data = xyz, 
+      file = output_file, 
+      max_degree = 360, 
+      frames = 200,
+      show_first_frame = FALSE,
+      colors = c(
+        "black",
+        rev(ggthemes::tableau_color_pal("Classic Blue", type = "ordered-sequential")(7))
+      ),
+      width = 0.8e3, 
+      height = 0.8e3
+    )
+  }
+  
+  
+  # Output file path for the animation
+  output_file <- paste0("3d_animation_sbx_", cg_name, "_color.gif")
+  
+  if (!file.exists(output_file)) {
+    # Render the rotating layout and save as a GIF
+    render_rotating_layout(
+      data = xyz |> 
+        mutate(node_val = scales::rescale(unclass(factor(node_val_counts,
+                                                         marker_levels)))), 
+      file = output_file, 
+      max_degree = 360, 
+      frames = 200,
+      show_first_frame = FALSE,
+      colors = colorspace::lighten(colorspace::desaturate(ggthemes::tableau_color_pal(palette = "Classic Cyclic")(13), amount = 0.25), amount = 0.050),
+      
+      width = 0.8e3, 
+      height = 0.8e3
+    )
+  } 
+  
+  # Output file path for the animation
+  output_file <- paste0("3d_animation_sbx_", cg_name, "_gradient.gif")
+  
+  if (!file.exists(output_file)) {
+    # Render the rotating layout and save as a GIF
+    render_rotating_layout(
+      data = xyz |> 
+        mutate(node_val = scales::rescale(unclass(factor(node_val_counts,
+                                                         marker_levels)))), 
+      file = output_file, 
+      max_degree = 360, 
+      frames = 200,
+      show_first_frame = FALSE,
+      colors = c(
+        "black",
+        rev(ggthemes::tableau_color_pal("Classic Blue", type = "ordered-sequential")(7))
+      ),
+      
+      width = 0.8e3, 
+      height = 0.8e3
+    )
+  } 
+  
+  
+  # Output file path for the animation
+  output_file <- paste0("3d_animation_sbx_", cg_name, "_CD3e.gif")
+  
+  if (!file.exists(output_file)) {
+    # Render the rotating layout and save as a GIF
+    render_rotating_layout(
+      data = xyz |> 
+        mutate(node_val = node_val_counts == "CD3e"), 
+      file = output_file, 
+      max_degree = 360, 
+      frames = 200,
+      show_first_frame = FALSE,
+      colors = c(
+        "gray",
+        "orangered"
+      ),
+      
+      width = 0.8e3, 
+      height = 0.8e3
+    )
+  } 
+  
+}
+
+
+
+cg <- cgs[[1]]
+
+light_dir <- c(0.2, 0.3, 1)
+light_dir <- light_dir / sqrt(sum(light_dir^2))
+
+xyz <- cg@layout$wpmds_3d %>% 
+  as_tibble(rownames = "umi") %>%
+  mutate(node_val_counts = cg@counts |> 
+           apply(1, function(rw) {colnames(cg@counts)[which(rw == 1)[1]]}), 
+         r = sqrt(x^2 + y^2 + z^2),
+         nx = x / r,
+         ny = y / r,
+         nz = z / r,
+         light_shade = nx * light_dir[1] +
+           ny * light_dir[2] +
+           nz * light_dir[3],
+         light_shade = scales::rescale(light_shade, to = c(0, 1)),
+         top_shade = scales::rescale(z),
+         depth_shade = scales::rescale(r))
+xyz <- 
+  xyz |> 
+  mutate(
+    occlusion = scales::rescale(rowMeans(sqrt(FNN::get.knn(as.matrix(xyz[, c("x","y","z")]), k = 20)$nn.dist)), to = c(1, 0)),
+    node_val = 0 * light_shade + 
+      0.5 * top_shade + 
+      0.5 * depth_shade + 
+      occlusion)
+
+# Output file path for the animation
+output_file <- paste0("3d_animation_sbx_flat.gif")
+
+
+if (!file.exists(output_file)) {
+  # Render the rotating layout and save as a GIF
+  render_rotating_layout(
+    data = xyz, 
+    file = output_file, 
+    max_degree = 360, 
+    frames = 200,
+    show_first_frame = FALSE,
+    colors = c(
+      "gray", "gray"
+    ),
+    width = 0.8e3, 
+    height = 0.8e3
+  )
+}
+
+```
+
+
+
+### Matched cells
+
+```{r}
+library(pbapply)
+
+candidate_cells <-
+  pg_data |> 
+  subset(l1_annotation_summary == "CD4 T") |> 
+  subset(sample_id == "S1_SBX") |> 
+  subset(n_umi > 100000 & n_umi < 150000) |> 
+  colnames()
+  
+trial_cells <- 
+  overlap_1to1 |>
+  filter(component_1 == "S1_SBX_81744308fcd1b95b") |> 
+  select(1,2) |> 
+  unlist()
+  
+
+cgs <- 
+  pg_data |> 
+  subset(cells = trial_cells) |> 
+  LoadCellGraphs() |> 
+  CellGraphs()  
+
+cgs <- 
+  cgs |> 
+  pblapply(function(cg) {
+    cg <<- cg
+    
+    cg@cellgraph <- 
+      cg@cellgraph |> 
+      mutate(coreness = tidygraph::node_coreness()) |> 
+      filter(coreness > 1)
+    
+    nodes <- cg@cellgraph |> as_tibble() |> pull(name)
+    
+    cg@counts <- 
+      cg@counts[nodes, ]
+    
+    layt <- 
+      pixelatorR::layout_with_weighted_pmds(
+               cg@cellgraph,
+               dim = 3,
+               pivots = 200
+             ) |> 
+             as.data.frame()
+    
+    colnames(layt) <- c("x", "y", "z")
+    
+    cg@layout <- 
+      list(wpmds_3d = layt)
+    
+    return(cg)
+  })
+```
+
+
+```{r}
+cgs |> 
+  pixelatorRinternal::gridPlot3D(
+    components = unname(trial_cells),
+    markers = c("CD3e", "CD4", "HLA-ABC"),
+    layout = "wpmds_3d", 
+    color_mode = "count",
+    color_range = c(0, 1),
+     point_size = 1.5,
+    plot_box = FALSE,
+    plot_colors = c("gray90", "orangered"),#PixelgenGradient(100, "Cherry"),
+    windowRect = c(100, 100, 1200, 800),
+  )
+
+debugonce(pixelatorRinternal:::gridPlot3D.list)
+
+list(SBX = cgs$S1_SBX_81744308fcd1b95b@layout$wpmds_3d,
+     ILL = cgs$S2_ILL_cd68330fe4e76dfd@layout$wpmds_3d) |> 
+  lapply(as_tibble, rownames = "umi") |> 
+  bind_rows(.id = "component") |> 
+  pivot_wider(names_from = component, values_from = c(x, y, z)) |> 
+  filter(!is.na(x_SBX) & !is.na(x_ILL)) |>
+  ggplot(aes(x_SBX, x_ILL)) +
+  geom_point()
+
+
+######
+
+X <- cgs$S1_SBX_81744308fcd1b95b@layout$wpmds_3d
+Y <- cgs$S2_ILL_cd68330fe4e76dfd@layout$wpmds_3d
+
+nods <- intersect(rownames(X), rownames(Y))
+
+length(nods) / nrow(X)
+length(nods) / nrow(Y)
+
+X_cmn <- as.matrix(X[nods, ])
+Y_cmn <- as.matrix(Y[nods, ])
+
+# Create Procrustes transformation models by aligning anchor marker CoMs
+procrustes_obj <-
+  pixelatorRinternal::ProcrustesAnalysis(
+        X = X_cmn,
+        Y = Y_cmn,
+        do_scale = TRUE,
+        do_rotate = TRUE,
+        do_translate = TRUE,
+        return_model = TRUE
+      )
+  
+
+# Apply transformation to layouts
+rotated_layouts <-
+  list(X = X_cmn, 
+       Y = Y_cmn) %>%
+  lapply(function(layt) {
+    mdl <- procrustes_obj
+    
+    Y <- as.matrix(layt)
+    
+    
+    Y <- sweep(Y, 2, mdl$translation, "+")
+    
+    Y <- Y / mdl$scale
+    
+    Y <- Y %*% mdl$rotation
+    
+    Y %>%
+      as_tibble(.name_repair = function(x) c("x", "y", "z")[seq_len(length(x))])
+  })
+
+
+joined_coord <- 
+  list(SBX = procrustes_obj$X,
+       ILL = procrustes_obj$Yrot |> 
+         as.data.frame() |> 
+         magrittr::set_colnames(c("x", "y", "z"))) |> 
+  lapply(as_tibble, rownames = "umi") |> 
+  bind_rows(.id = "component") 
+
+
+
+plot <- 
+joined_coord |>
+  pivot_longer(names_to = "coord", values_to = "value", cols = c(x, y, z)) |>
+  pivot_wider(names_from = component, values_from = value) |> 
+  ggplot(aes(SBX, ILL)) +
+  geom_abline() +
+  geom_point(size = 0.1, alpha = 0.05) +
+  facet_wrap(~coord) +
+  theme_bw() +
+  coord_fixed()
+
+ggsave(
+  filename = "results/04_colocalization/spinning_cell/spinning_cell_procrustes_alignment_scatterplots.png"),
+  plot = plot,
+  width = 8,
+  height = 4
+)
+
+plot <- 
+  joined_coord |> 
+  arrange(z) |> 
+  ggplot(aes(x, y)) +
+  geom_point(size = 0.1, alpha = 0.05) +
+  theme_void() +
+  coord_fixed() +
+  facet_wrap(~component) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "white")
+  )
+  
+ggsave(
+  filename = "results/04_colocalization/spinning_cell/spinning_cell_procrustes_alignment_layouts.png"),
+  plot = plot,
+  width = 8,
+  height = 4
+)
+set.seed(37)
+random_nodes <- 
+  sample(unique(joined_coord$umi), 8)
+plot <- 
+  joined_coord |> 
+  arrange(z) |> 
+  mutate(is_highlighted = ifelse(umi %in% random_nodes, TRUE, FALSE)) |>
+  ggplot(aes(x, y)) +
+  geom_point(size = 0.1, alpha = 0.05) +
+  geom_point(
+    data = . %>% filter(is_highlighted),
+    aes(color = umi), 
+    size = 1.5,
+    alpha = 1,
+    show.legend = FALSE
+  ) +
+  theme_void() +
+  coord_fixed() +
+  facet_wrap(~component) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "white")
+  )
+  
+ggsave(
+  filename = "results/04_colocalization/spinning_cell/spinning_cell_procrustes_alignment_layouts2.png"),
+  plot = plot,
+  width = 8,
+  height = 4
+)
+
+
+######
+
+
+X <- cgs$S1_SBX_81744308fcd1b95b@layout$wpmds_3d
+Y <- cgs$S2_ILL_cd68330fe4e76dfd@layout$wpmds_3d
+
+
+cgs_common <- 
+  cgs |> 
+  pblapply(function(cg) {
+    cg <<- cg
+    
+    cg@cellgraph <- 
+      cg@cellgraph |> 
+      filter(name %in% nods)
+    
+    cg@counts <- 
+      cg@counts[nods, ]
+    
+    return(cg)
+  })
+
+cgs_common$S1_SBX_81744308fcd1b95b@layout$wpmds_3d_rot <- procrustes_obj$X |> 
+  as.data.frame()
+cgs_common$S2_ILL_cd68330fe4e76dfd@layout$wpmds_3d_rot <- procrustes_obj$Yrot |> 
+         as.data.frame() |> 
+         magrittr::set_colnames(c("x", "y", "z"))
+
+cgs_common |> 
+  pixelatorRinternal::gridPlot3D(
+    components = unname(trial_cells),
+    markers = "HLA-ABC", #c("CD3e", "CD4", "HLA-ABC", "CD82", "CD81", "TCRab"),
+    layout = "wpmds_3d_rot", 
+    color_mode = "gstari",
+    k = 2,
+    color_range = c(-2, 2),
+     point_size = 1.5,
+    plot_box = FALSE,
+    plot_colors = PixelgenGradient(100, "BluesCherry"),#c("gray90", "orangered"),#PixelgenGradient(100, "Cherry"),
+    zoom = 0.6,
+    windowRect = c(100, 100, 500, 900),
+  )
+
+######
+
+# Create a tibble with x, y, z coordinates and a "node_val" column
+# for plotting
+
+cg <- cgs$S1_SBX_81744308fcd1b95b
+
+light_dir <- c(0.2, 0.3, 1)
+light_dir <- light_dir / sqrt(sum(light_dir^2))
+
+xyz <- cg@layout$wpmds_3d %>% 
+  as_tibble(rownames = "umi") %>%
+  mutate(node_val1 = cg@counts |> 
+           apply(1, function(rw) {colnames(cg@counts)[which(rw == 1)[1]]}), 
+         r = sqrt(x^2 + y^2 + z^2),
+         nx = x / r,
+         ny = y / r,
+         nz = z / r,
+         light_shade = nx * light_dir[1] +
+           ny * light_dir[2] +
+           nz * light_dir[3],
+         light_shade = scales::rescale(light_shade, to = c(0, 1)),
+         top_shade = scales::rescale(z),
+         depth_shade = scales::rescale(r))
+xyz <- 
+  xyz |> 
+  mutate(
+    occlusion = scales::rescale(rowMeans(sqrt(FNN::get.knn(as.matrix(xyz[, c("x","y","z")]), k = 20)$nn.dist)), to = c(1, 0)),
+    node_val = 0 * light_shade + 
+                  0.5 * top_shade + 
+                  0.5 * depth_shade + 
+                  occlusion)
+
+# Output file path for the animation
+output_file <- "3d_animation_roche_lightblue_final.gif"
+
+# Render the rotating layout and save as a GIF
+render_rotating_layout(
+  data = xyz, 
+  file = output_file, 
+  max_degree = 360, 
+  frames = 200,
+  show_first_frame = FALSE,
+  # colors = c(
+  #   "#02367B",
+  #   "#016CA5",
+  #   "#0396C7",
+  #   "#04BBDF",
+  #   "#55E3EA"
+  # ),
+  colors = c(
+    "black",
+    rev(ggthemes::tableau_color_pal("Classic Blue", type = "ordered-sequential")(7))
+    ),
+  # colors = c(
+  #   "#000001",
+  #   "#031239", 
+  #   "#062473", 
+  #   "#0936AB", 
+  #   "#628DFC"
+  # ),
+    # c("#020C27", 
+    #          "#0B41CD",  
+    #          "#8AA9E3"),
+  width = 0.8e3, 
+  height = 0.8e3
+)
+
+
+# Output file path for the animation
+output_file <- "3d_animation_roche_test.gif"
+
+
+apa <- 
+  xyz |> select(1:5) |> 
+    mutate(node_val = scales::rescale(unclass(factor(node_val1, sample(unique(node_val1), n_distinct(node_val1))))))
+
+# apa$node_val |> table()
+# Render the rotating layout and save as a GIF
+render_rotating_layout(
+  data = apa, 
+  file = output_file, 
+  max_degree = 360, 
+  frames = 100,
+  show_first_frame = TRUE,
+  colors = colorspace::lighten(colorspace::desaturate(ggthemes::tableau_color_pal(palette = "Classic Cyclic")(13), amount = 0.25), amount = 0.050),
+  
+  # colors = c(
+  #   "#02367B",
+  #   "#016CA5",
+  #   "#0396C7",
+  #   "#04BBDF",
+  #   "#55E3EA"
+  # ),
+  # colors = c(
+  #   "black",
+  #   rev(ggthemes::tableau_color_pal("Classic Blue", type = "ordered-sequential")(7))
+  #   ),
+  # colors = c(
+  #   "#000001",
+  #   "#031239",
+  #   "#062473",
+  #   "#0936AB",
+  #   "#628DFC"
+  # ),
+    # c("#020C27", 
+    #          "#0B41CD",  
+    #          "#8AA9E3"),
+  width = 0.5e3, 
+  height = 0.5e3
+)
+
+# Output file path for the animation
+output_file <- "3d_animation_roche_blue.gif"
+
+# Render the rotating layout and save as a GIF
+render_rotating_layout(
+  data = xyz, 
+  file = output_file, 
+  max_degree = 360, 
+  frames = 200,
+  show_first_frame = TRUE,
+  colors = c("#020C27", "#0B41CD", "#B5C8FA"),
+  width = 0.5e3, 
+  height = 0.5e3
+)
+
+
+# Output file path for the animation
+output_file <- "3d_animation_roche_blue_half.gif"
+
+# Render the rotating layout and save as a GIF
+render_rotating_layout(
+  data = xyz |> filter(y < 0), 
+  file = output_file, 
+  max_degree = 360, 
+  frames = 200,
+  show_first_frame = TRUE,
+  colors = c("#020C27", "#0B41CD"),
+  width = 0.5e3, 
+  height = 0.5e3
+)
+
+# Output file path for the animation
+output_file <- "3d_animation_markercolor.gif"
+
+xyz <- cg@layout$wpmds_3d %>% 
+  as_tibble(rownames = "umi") %>%
+  mutate(node_val = cg@counts |> 
+           apply(1, function(rw) {colnames(cg@counts)[which(rw == 1)[1]]}))
+
+# Render the rotating layout and save as a GIF
+render_rotating_layout(
+  data = xyz, 
+  file = output_file, 
+  max_degree = 360, 
+  frames = 200,
+  show_first_frame = TRUE,
+  colors = colorRampPalette(c("#c7519c", "#ba43b4", "#8a60b0", 
+                              "#6f63bb", "#1f83b4", "#12a2a8", 
+                              "#2ca030", "#78a641",
+                              "#bcbd22", "#ffbf50", 
+                              "#ffaa0e", "#ff7f0e", "#d63a3a"))(158),
+  width = 0.5e3, 
+  height = 0.5e3
+)
+
+```
+
+

@@ -783,7 +783,8 @@ pred_doublets_sweep <-
     ) %>% 
       as_tibble(rownames = "sample_component")
   ) %>% 
-  unnest(predicted_doublets)
+  unnest(predicted_doublets) %>% 
+  mutate(sample_component = id)
   
 doublet_cells <- 
   pred_doublets_sweep %>% 
@@ -2370,6 +2371,55 @@ ggsave(
 # reds = c("#F7BFC4", "#EF9DA2", "#E67C81", "#DB5D61", "#CE4042", "#A53335", "#7C2628"), 
 # oranges = c("#F6DBD4", "#EBB9AA", "#DE9982", "#D07B5B", "#C05F36", "#A04F2D", "#814024"),
 # yellows = c("#FCE6B4", "#F7D78C", "#F0C966", "#E6BB43", "#DAAC22", "#AE8A1B", "#836714")), 
+
+plot_data <- 
+  pg_data_annotated %>% 
+  FetchData(vars = c("cell_annotation", rownames(pg_data_annotated)), layer = "data") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  pivot_longer(cols = -c(sample_component, cell_annotation), names_to = "marker", values_to = "value") 
+
+plot_data %>% 
+  ggplot(aes(value)) + 
+  geom_histogram(bins = 100)
+
+plot_data_wide <- 
+  plot_data %>% 
+  mutate(positive = value > 1) %>% 
+  group_by(cell_annotation, marker, positive) %>% 
+  count() %>% 
+  pivot_wider(names_from = positive, values_from = n, values_fill = 0) %>% 
+  mutate(prc_positive = `TRUE` / (`TRUE` + `FALSE`) * 100) %>%
+  select(cell_annotation, marker, prc_positive) %>%
+  pivot_wider(names_from = cell_annotation, values_from = prc_positive) 
+  
+plot_data_wide %>% 
+  column_to_rownames("marker") %>%
+  
+  ComplexHeatmap::pheatmap(
+    fontsize = 4,
+    clustering_method = "ward.D2",
+    # color = cherry_gradient(5),
+    color = c("gray99", "#F9D2DF", "#DB8CA6", "#AC4B69", "#781534"),
+    # color = c("white", "#F7BFC4", "#EF9DA2", "#E67C81", "#DB5D61", "#CE4042", "#A53335", "#7C2628"),
+    heatmap_legend_param = list(title = "% cells\n(CLR > 1)"),
+    cutree_rows = 7,
+    cellwidth = 3.5,
+    cellheight = 3.5
+  ) %>% 
+  as.ggplot()
+ggsave(
+  filename = paste0(params$save_folder, "Heatmap_annotated_cells_positive cells.pdf"),
+  width = 10,
+  height = 13
+)
+
+plot_data_wide %>% 
+  pivot_longer(cols = -marker, names_to = "cell_annotation", values_to = "prc_positive") %>% 
+  group_by(marker) %>% 
+  top_n(1, prc_positive) %>% 
+  slice_max(prc_positive, n = 1, with_ties = FALSE) %>%
+  arrange(prc_positive) %>% 
+  print(n = 50)
 
 
 ```

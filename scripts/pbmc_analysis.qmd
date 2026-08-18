@@ -2059,6 +2059,7 @@ ggsave(
   height = 8
 )
 
+
 plot_data_sum <- 
   plot_data %>% 
   filter(!sample_component %in% c(missing_annotations, conflicting_annotations)) %>% 
@@ -2093,6 +2094,8 @@ ggsave(
   height = 8
 )
 
+plot_data_sum %>% 
+  write_csv(paste0(params$save_folder, "Fig3B_data.csv"))
 
 plot_data_sum %>%
   arrange(cell_annotation) %>% 
@@ -2269,6 +2272,10 @@ ggsave(
   height = 8
 )
 
+
+plot_data %>% 
+  write_csv(paste0(params$save_folder, "Fig3A_data.csv"))
+
 FetchData(pg_data_annotated, c("cell_annotation", annotation_markers), 
           layer = "data") %>% 
   as_tibble(rownames = "sample_component") %>% 
@@ -2293,6 +2300,19 @@ ggsave(
   width = 8,
   height = 10
 )
+
+
+FetchData(pg_data_annotated, c("cell_annotation", annotation_markers), 
+          layer = "data") %>% 
+  as_tibble(rownames = "sample_component") %>% 
+  pivot_longer(cols = -c(sample_component, cell_annotation), names_to = "marker", values_to = "value") %>%
+  group_by(cluster = cell_annotation, marker) %>%
+  summarise(mean = mean(value)) %>% 
+  pivot_wider(names_from = marker, values_from = mean) %>%
+  column_to_rownames("cluster") %>%
+  sweep(2, apply(., 2, max), "/") %>% 
+  as_tibble(rownames = "cell_type") %>% 
+  write_csv(paste0(params$save_folder, "SupFig4_data.csv"))
 
 ```
 
@@ -2332,6 +2352,8 @@ ggsave(
   height = 5
 )
 
+plot_data %>% 
+  write_csv(paste0(params$save_folder, "Fig3C_data.csv"))
 
 FetchData(pg_data_annotated, c("cell_annotation", annotation_markers), 
             layer = "data") %>% 
@@ -2412,6 +2434,9 @@ ggsave(
   width = 10,
   height = 13
 )
+
+plot_data_wide %>% 
+  write_csv(paste0(params$save_folder, "EDfig4_data.csv"))
 
 plot_data_wide %>% 
   pivot_longer(cols = -marker, names_to = "cell_annotation", values_to = "prc_positive") %>% 

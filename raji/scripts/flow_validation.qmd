@@ -21,10 +21,6 @@ In this data analysis workflow, we will explore how phytohemagglutinin (PHA) sti
 
     - PNA064_Sample_1_S1.layout.pxl (Stimulated)
     - PNA064_Sample_2_S2.layout.pxl (PHA)
-    - PNA064_Sample_3_S3.layout.pxl (Stimulated)
-    - PNA064_Sample_5_S5.layout.pxl (PHA)
-    - PNA056_Maud_PBMCs_unstimulated_sample01_S1.layout.dataset.pxl (Unstimulated)
-    - PNA056_Maud_PBMCs_PHA_sample02_S2.layout.dataset.pxl (PHA)
 
 # Data Preprocessing
 
@@ -61,10 +57,6 @@ library(harmony)
 data_files <- c(
   resting_3832 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA064_Sample_1_S1.layout.pxl"),
   stimulated_3832 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA064_Sample_2_S2.layout.pxl")
-  #resting_6339 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA064_Sample_3_S3.layout.pxl"),
-  #stimulated_6339 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA064_Sample_5_S5.layout.pxl"),
-  #resting_7312 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA056_Maud_PBMCs_unstimulated_sample01_S1.layout.dataset.pxl"),
-  #stimulated_7312 = file.path("/Users/vincent/Desktop/Pixelgen/data_stories/data/PNA056_Maud_PBMCs_PHA_sample02_S2.layout.dataset.pxl")
 )
 
 # Read PXL files as a list of Seurat objects

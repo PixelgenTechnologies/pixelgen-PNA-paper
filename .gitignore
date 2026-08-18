@@ -9,3 +9,4 @@ data_untracked/
 *.pxl
 results/
 *.gif
+.positai

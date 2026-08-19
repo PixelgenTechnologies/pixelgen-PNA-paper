@@ -6,10 +6,8 @@ A preprint of the paper is available at: [DOI / URL]
 
 ### Repository Structure
 - 📂 **pixelgen-PNA-paper/**
-  - 📄 *setup.R* - Script to set up R environment  
   - 📂 *data/* - Data used in the paper (see download instructions)  
   - 📂 *docs/* - Additional documentation  
-  - 📂 *renv/* - R environment files  
   - 📂 *results/* - Output results and figures  
   - 📂 *scripts/* - Notebooks with analyses  
 
@@ -19,7 +17,7 @@ Clone the repository:
 
 git clone https://github.com/PixelgenTechnologies/pixelgen-PNA-paper.git
 
-Run the `setup.R` line by line to setup the R environment using `renv`.
+Install required R packages manually (see Requirements below once documented). This repository does not use `renv`.
 
 ### Data
 

@@ -10,3 +10,5 @@ data_untracked/
 results/
 *.gif
 .positai
+renv/
+renv.lock

@@ -19,8 +19,8 @@ In this data analysis workflow, we will explore how phytohemagglutinin (PHA) sti
 # Data
 
 
-    - PNA064_Sample_1_S1.layout.pxl (Stimulated)
-    - PNA064_Sample_2_S2.layout.pxl (PHA)
+    - PNA064_Sample_1_S1.layout.pxl (Resting)
+    - PNA064_Sample_2_S2.layout.pxl (PHA-stimulated)
 
 # Data Preprocessing
 

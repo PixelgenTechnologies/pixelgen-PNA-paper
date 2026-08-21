@@ -75,7 +75,7 @@ seur <-
           group.by.vars = "sample",
           plot_convergence = FALSE,
         ) |> 
-  RunUMAP(reduction = "harmony", dims = 1:15, n.neighbors = 15, seed.use = 37) |> 
+  RunUMAP(reduction = "harmony", dims = 1:15, n.neighbors = 15, seed.use = 38) |> 
   FindNeighbors(reduction = "harmony", dims = 1:15, k.param = 15) %>%
   FindClusters(resolution = 0.5, random.seed = 37)
 
@@ -154,6 +154,8 @@ ggsave(
   height = 5
 )
 
+plot_data %>% 
+  write_csv("../results/Brodin/Fig5A_data.csv")
 
 plot_data %>% 
   ggplot(aes(umap_1, umap_2, color = condition)) +
@@ -206,6 +208,16 @@ ggsave(
   width = 4,
   height = 5
 )
+
+seur[[]] |> 
+  as_tibble() |> 
+  group_by(sample, condition, CellType) |> 
+  count() |> 
+  group_by(sample) |> 
+  mutate(frac = n / sum(n)) |> 
+  ungroup() |> 
+  mutate(CellType = factor(CellType, names(pbmc_cell_type_palette))) %>% 
+  write_csv("../results/Brodin/Fig5B_data.csv")
 
 
 ```
@@ -285,6 +297,15 @@ pdf(
 plots
 dev.off()
 
+
+prox_sum |> 
+  filter(condition == "SLE") |>
+  filter(marker_1 %in% plot_markers,
+         marker_2 %in% plot_markers) |> 
+  mutate(mean_log2_ratio = ifelse(abs(mean_log2_ratio) > 0.75, sign(mean_log2_ratio) * 0.75, mean_log2_ratio)) %>% 
+  select(marker_1, marker_2, mean_log2_ratio) %>% 
+  write_csv("../results/Brodin/Fig5C_data.csv")
+                          
 p1 <- 
   prox_sum |> 
   filter(condition == "SLE") |>
@@ -487,5 +508,21 @@ ggsave(
   width = 6,
   height = 6
 )
+
+
+
+FetchData(seur, c("condition", "sample", "CellType", c("CD180", "CD21"))) |> 
+  as_tibble(rownames = "component") |> 
+  filter(CellType == "B") |> 
+  pivot_longer(-c(component, condition, sample, CellType), names_to = "marker", values_to = "clr") |> 
+  left_join(prox |> 
+              filter(marker_1 %in% c("CD180", "CD21"),
+                     marker_2 %in% c("CD180", "CD21"), 
+                     marker_1 == marker_2) |> 
+              filter(pmin > 0.001) |> 
+              select(component, marker = marker_1, log2_ratio)) |> 
+  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") |>
+  mutate(value = ifelse(is.na(value), 0, value)) %>% 
+  write_csv("../results/Brodin/Fig5DE_data.csv")
 ```
 

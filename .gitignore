@@ -8,5 +8,9 @@ data/
 data_untracked/
 *.pxl
 results/
+roche/results/
+raji/output/
 *.gif
 .positai
+renv/
+renv.lock

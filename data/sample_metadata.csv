@@ -1,19 +1,19 @@
-sample_id,filename,sample_alias,Flowcell,dataset,pg_id,pna_id,condition,cell_number,status,Comment
-PNA062_unstim_PBMCs_1000cells_S02,PNA062_unstim_PBMCs_1000cells_S02_S2.layout.pxl,Resting_PBMC,250318_VH00725_276_22277MKNX,QC,PGseq283,PNA062,Resting PBMCs,1000,In analysis,"Supposed to be donor 7312, but is likely 6805"
-PNA062_Raji_1000cells_S06,PNA062_Raji_1000cells_S06_S6.layout.pxl,Raji,250318_VH00725_276_22277MKNX,QC,PGseq283,PNA062,Raji,1000,In analysis,
-PNA064_Sample_1,PNA064_Sample_1_S1.layout.pxl,"Donor 1, resting PBMCs",250324_VH00725_278_222723FNX,Stim,PGseq285,PNA064,Resting PBMCs,1000,To be processed,
-PNA064_Sample_2,PNA064_Sample_2_S2.layout.pxl,"Donor 1, PHA",250324_VH00725_278_222723FNX,Stim,PGseq285,PNA064,PHA PBMCs,500,To be processed,
-PNA064_Sample_3,PNA064_Sample_3_S3.layout.pxl,"Donor 2, resting PBMCs",250324_VH00725_278_222723FNX,Stim,PGseq285,PNA064,Resting PBMCs,1000,To be processed,
-PNA064_Sample_5,PNA064_Sample_5_S5.layout.pxl,"Donor 2, PHA",250324_VH00725_278_222723FNX,Stim,PGseq285,PNA064,PHA PBMCs,500,To be processed,
-PNA056_Maud_PBMCs_unstimulated_sample01_S1,PNA056_Maud_PBMCs_unstimulated_sample01_S1.layout.pxl,Resting_PBMC,250306_VH00725_270_AACNHKJHV,Validation,PGseq277,PNA056,Resting PBMCs,1000,To be processed,
-PNA056_Maud_PBMCs_PHA_sample02,PNA056_Maud_PBMCs_PHA_sample02_S2.layout.pxl,PHA_PBMC,250306_VH00725_270_AACNHKJHV,Validation,PGseq277,PNA056,PHA PBMCs,500,To be processed,
-PNA065_CARTcells_S01,,CART,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,CAR T cells only,500,In analysis,
-PNA065_CARTcells_Raji_4hrs_1to1_S02,,CART:Raji_1:1_4h,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,"CART:Raji 1:1, 4hrs co-culture",500,In analysis,
-PNA065_CARTcells_Raji_4hrs_5to1_S03,,CART:Raji_5:1_4h,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,"CART:Raji 5:1, 4hrs co-culture",500,In analysis,
-PNA065_CARTcells_Raji_24hrs_1to1_S05,,CART:Raji_1:1_24h,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,"CART:Raji 1:1, 24hrs co-culture",500,In analysis,
-PNA065_CARTcells_Raji_24hrs_5to1_S03,,CART:Raji_5:1_24h,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,"CART:Raji 5:1, 24hrs co-culture",500,In analysis,
-PNA066_CARTcells_S01,,CART,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,CAR T cells only,500,In analysis,
-PNA066_CARTcells_Raji_4hrs_1to1_S02,,CART:Raji_1:1_4h,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,"CART:Raji 1:1, 4hrs co-culture",500,In analysis,
-PNA066_CARTcells_Raji_4hrs_5to1_S03,,CART:Raji_5:1_4h,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,"CART:Raji 5:1, 4hrs co-culture",500,In analysis,
-PNA066_CARTcells_Raji_24hrs_1to1_S05,,CART:Raji_1:1_24h,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,"CART:Raji 1:1, 24hrs co-culture",500,In analysis,
-PNA066_CARTcells_Raji_24hrs_5to1_S06,,CART:Raji_5:1_24h,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,"CART:Raji 5:1, 24hrs co-culture",500,In analysis,
+sample_id,filename,sample_alias,Flowcell,dataset,pg_id,pna_id,condition,cell_number,status
+PNA062_unstim_PBMCs_1000cells_S02,PNA062_unstim_PBMCs_1000cells_S02_S2.layout.pxl,Resting_PBMC,250318_VH00725_276_22277MKNX,QC,PGseq283,PNA062,Resting PBMCs,1000,In analysis
+PNA062_Raji_1000cells_S06,PNA062_Raji_1000cells_S06_S6.layout.pxl,Raji,250318_VH00725_276_22277MKNX,QC,PGseq283,PNA062,Raji,1000,In analysis
+PNA064_Sample_1,PNA064_Sample_1_S1.layout.pxl,"Donor 1, resting PBMCs",250324_VH00725_278_222723FNX,Stim,PGseq285,PNA064,Resting PBMCs,1000,To be processed
+PNA064_Sample_2,PNA064_Sample_2_S2.layout.pxl,"Donor 1, PHA",250324_VH00725_278_222723FNX,Stim,PGseq285,PNA064,PHA PBMCs,500,To be processed
+PNA064_Sample_3,PNA064_Sample_3_S3.layout.pxl,"Donor 2, resting PBMCs",250324_VH00725_278_222723FNX,Stim,PGseq285,PNA064,Resting PBMCs,1000,To be processed
+PNA064_Sample_5,PNA064_Sample_5_S5.layout.pxl,"Donor 2, PHA",250324_VH00725_278_222723FNX,Stim,PGseq285,PNA064,PHA PBMCs,500,To be processed
+PNA056_Maud_PBMCs_unstimulated_sample01_S1,PNA056_Maud_PBMCs_unstimulated_sample01_S1.layout.pxl,Resting_PBMC,250306_VH00725_270_AACNHKJHV,Validation,PGseq277,PNA056,Resting PBMCs,1000,To be processed
+PNA056_Maud_PBMCs_PHA_sample02,PNA056_Maud_PBMCs_PHA_sample02_S2.layout.pxl,PHA_PBMC,250306_VH00725_270_AACNHKJHV,Validation,PGseq277,PNA056,PHA PBMCs,500,To be processed
+PNA065_CARTcells_S01,,CART,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,CAR T cells only,500,In analysis
+PNA065_CARTcells_Raji_4hrs_1to1_S02,,CART:Raji_1:1_4h,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,"CART:Raji 1:1, 4hrs co-culture",500,In analysis
+PNA065_CARTcells_Raji_4hrs_5to1_S03,,CART:Raji_5:1_4h,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,"CART:Raji 5:1, 4hrs co-culture",500,In analysis
+PNA065_CARTcells_Raji_24hrs_1to1_S05,,CART:Raji_1:1_24h,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,"CART:Raji 1:1, 24hrs co-culture",500,In analysis
+PNA065_CARTcells_Raji_24hrs_5to1_S03,,CART:Raji_5:1_24h,250321_VH00725_277_22277M3NX,CAR T,PGseq284,PNA065,"CART:Raji 5:1, 24hrs co-culture",500,In analysis
+PNA066_CARTcells_S01,,CART,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,CAR T cells only,500,In analysis
+PNA066_CARTcells_Raji_4hrs_1to1_S02,,CART:Raji_1:1_4h,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,"CART:Raji 1:1, 4hrs co-culture",500,In analysis
+PNA066_CARTcells_Raji_4hrs_5to1_S03,,CART:Raji_5:1_4h,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,"CART:Raji 5:1, 4hrs co-culture",500,In analysis
+PNA066_CARTcells_Raji_24hrs_1to1_S05,,CART:Raji_1:1_24h,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,"CART:Raji 1:1, 24hrs co-culture",500,In analysis
+PNA066_CARTcells_Raji_24hrs_5to1_S06,,CART:Raji_5:1_24h,250413_VH00725_292_2227NFVNX,CAR T,PGseq299,PNA066,"CART:Raji 5:1, 24hrs co-culture",500,In analysis

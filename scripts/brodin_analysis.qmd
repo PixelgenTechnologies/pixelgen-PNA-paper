@@ -471,8 +471,8 @@ ggsave(
   height = 5
 )
 
-
-FetchData(seur, c("condition", "sample", "CellType", c("CD180", "CD21"))) |> 
+plot_data_test <- 
+  FetchData(seur, c("condition", "sample", "CellType", c("CD180", "CD21"))) |> 
   as_tibble(rownames = "component") |> 
   filter(CellType == "B") |> 
   pivot_longer(-c(component, condition, sample, CellType), names_to = "marker", values_to = "clr") |> 
@@ -483,7 +483,19 @@ FetchData(seur, c("condition", "sample", "CellType", c("CD180", "CD21"))) |>
               filter(pmin > 0.001) |> 
               select(component, marker = marker_1, log2_ratio)) |> 
   pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") |>
-  mutate(value = ifelse(is.na(value), 0, value)) |>
+  mutate(value = ifelse(is.na(value), 0, value)) 
+
+library(rstatix)
+stat.test <- 
+  plot_data_test %>%
+  group_by(marker, metric) %>%
+  wilcox_test(value ~ condition) %>%
+  add_xy_position(x = "condition")
+
+# 2. View exact unadjusted p-value in console
+print(stat.test$p)
+
+plot_data_test |>
   ggplot(aes(condition, value, group = sample, fill = condition))+
   geom_hline(yintercept = 0) +
   geom_violin(aes(group = sample), draw_quantiles = 0.5) +
@@ -491,11 +503,16 @@ FetchData(seur, c("condition", "sample", "CellType", c("CD180", "CD21"))) |>
                             dodge.width = 0.9,
                             corral.width = 0.45, 
                             size = 0.1) +
-  stat_compare_means(
-    # aes(label = ..p.format..), 
-    comparisons = list(c("HC", "SLE")),
-    method = "wilcox.test", 
-    size = 3) +
+  # stat_compare_means(
+  #   # aes(label = ..p.format..), 
+  #   comparisons = list(c("HC", "SLE")),
+  #   method = "wilcox.test", 
+  #   size = 3) +
+  stat_pvalue_manual(
+    stat.test, 
+    label = "p = {p}", # Or label = "p = {format.pval(p, digits = 3)}"
+    size = 3
+  ) +
   facet_grid(marker~metric, scales = "free_y") +
   scale_y_continuous(expand = expansion(c(0.05, 0.2))) + 
   theme_bw() +
@@ -511,18 +528,7 @@ ggsave(
 
 
 
-FetchData(seur, c("condition", "sample", "CellType", c("CD180", "CD21"))) |> 
-  as_tibble(rownames = "component") |> 
-  filter(CellType == "B") |> 
-  pivot_longer(-c(component, condition, sample, CellType), names_to = "marker", values_to = "clr") |> 
-  left_join(prox |> 
-              filter(marker_1 %in% c("CD180", "CD21"),
-                     marker_2 %in% c("CD180", "CD21"), 
-                     marker_1 == marker_2) |> 
-              filter(pmin > 0.001) |> 
-              select(component, marker = marker_1, log2_ratio)) |> 
-  pivot_longer(c(clr, log2_ratio), names_to = "metric", values_to = "value") |>
-  mutate(value = ifelse(is.na(value), 0, value)) %>% 
+plot_data %>% 
   write_csv("../results/Brodin/Fig5DE_data.csv")
 ```
 

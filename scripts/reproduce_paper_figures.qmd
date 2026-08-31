@@ -27,7 +27,7 @@ library(here)
 here::i_am("scripts/reproduce_paper_figures.qmd")
 
 # Load helper functions
-source(here("raji/scripts/helpers.R"))
+source(here("scripts/utility.R"))
 ```
 
 Load libraries
